@@ -110,35 +110,59 @@ class PPD_population:
 
         self.model_time = 0. | units.Myr
 
-        self.disk_hash = {}
-
-        self.radiative_stars = Particles()
-        self.disked_stars = Particles()
+        self.star_particles = Particles()
         self.disks = []
 
-        self.star_particles.add_calculated_attribute('total_mass', 
-            lambda stellar_mass, disk_mass: stellar_mass + disk_mass )
+        #self.star_particles.add_calculated_attribute('total_mass', 
+        #    lambda stellar_mass, disk_mass: stellar_mass + disk_mass )
+
+
+        # disk properties available from particles, makes for easier saving
+
+        # utility function, gets attribute from disk or returns an alternative
+        # if star has no disk (typically, massive stars)
+        check_attribute = lambda disk_key, attribute, alternative: \
+            alternative if disk_key < 0 else \
+            getattr(self.disks[disk_key], attribute)
+
+        # disk attributes to save with particles
+        disk_attributes = ['accreted_mass', 'disk_gas_mass', 'disk_dust_mass',
+            'disk_radius', 'outer_photoevap_rate',
+            'disk_active', 'disk_dispersed', 'disk_convergence_failure']
+
+        # alternatives for massive stars
+        alternatives = [0.|units.MSun, 0.|units.MSun, 0.|units.MSun, 
+            0.|units.AU, 0.|units.MSun/units.yr, False, False, False]
+
+        for attr, alt in zip(disk_attributes, alternatives):
+            self.star_particles.add_calculated_attribute(attr,
+                lambda disk_key: check_attribute (disk_key, attr, alt) )
+
+        self.star_particles.add_calculated_attribute('total_mass',
+            lambda mass, disk_mass, accreted_mass: mass + disk_mass + accreted_mass)
 
 
     def evolve_model (self, end_time):
 
+        # stars typically brighten but lose mass, in contrast with fuv luminosity
+        # trend. Instead, it is scaled by total luminosity, effectively assuming 
+        # constant surface temperature
+        self.star_particles.fuv_luminosity =             \
+            self.star_particles.initial_fuv_luminosity * \
+           (self.star_particles.luminosity /             \
+            self.star_particles.initial_luminosity)
+
         active_disks = []
 
         for i in range(len(self.disks)):
-            if self.disks[i].disk_active:
+            if self.disks[i] is not None and self.disks[i].disk_active:
                 self.disks[i].outer_photoevap_rate = \
                     self.compute_epe_rate(self.disks[i])
                 active_disks.append(self.disks[i])
 
         disk_class.run_disks(self.codes, active_disks, end_time - self.model_time)
 
-        for i in range(len(self.disks)):
-            self.disked_stars[i].mass = \
-                self.disks[i].central_mass  + \
-                self.disks[i].accreted_mass + \
-                self.disks[i].disk_gas_mass + \
-                self.disks[i].disk_dust_mass
-            self.disked_stars[i].radius = 0.02 | units.pc
+        self.star_particles.radius = 0.02 | units.pc
 
         self.model_time = end_time
 
@@ -156,22 +180,24 @@ class PPD_population:
 
         F = 0. | G0
 
-        for i in range(len(self.radiative_stars)):
+        for i in range(len(self.star_particles)):
 
-            host_star = self.disked_stars[disk.host_star_id]
+            if self.star_particles[i].fuv_luminosity > 0. | units.LSun:
 
-            R = (host_star.position - self.radiative_stars[i].position).length()
+                host_star = self.star_particles[disk.host_star_id]
 
-            if R < 5e17/4.*(disk.disk_radius.value_in(units.cm)/1e14)**0.5|units.cm:
-                return 2e-9 * (1.+1.5)**2/1.5*3 * \
-                    (disk.disk_radius.value_in(units.cm)/1e14) | units.MSun/units.yr
+                R = (host_star.position - self.radiative_stars[i].position).length()
 
-            F += self.radiative_stars[i].fuv_luminosity/(4.*np.pi*R*R)
+                R_disk = disk.disk_radius.value_in(units.cm)/1e14
+                if R < 5e17/4.*R_disk**0.5 | units.cm:
+                    return 2e-9 * (1.+1.5)**2/1.5*3 * R_disk | units.MSun/units.yr
 
-            if self.hydro is not None:
-                tau = optical_depth_between_points(self.hydro, host_star.position,
-                    self.radiative_stars[i].position, kappa)
-                F *= np.exp(-tau)
+                F += self.star_particles[i].fuv_luminosity/(4.*np.pi*R*R)
+
+                if self.hydro is not None:
+                    tau = optical_depth_between_points(self.hydro,
+                        host_star.position, self.radiative_stars[i].position, kappa)
+                    F *= np.exp(-tau)
 
         return self.interpolator.interp_amuse(disk.central_mass, F,
             disk.disk_gas_mass, disk.disk_radius)
@@ -227,9 +253,10 @@ class PPD_population:
                     T = disk.Tm/np.sqrt(disk.grid[mask].r.value_in(units.AU))
                     disk.grid[mask].pressure = (1e-12 | units.g/units.cm**2) * T * const
 
-                    self.disked_stars[disk.host_star_id].radius = 0.49 * r_min
+                    self.star_particles[disk.host_star_id].radius = 0.49 * r_min
 
 
+    '''
     @property
     def disk_particles (self):
         return Particles(len(self.disked_stars),
@@ -244,49 +271,61 @@ class PPD_population:
             outer_photoevap_rate = [ disk.outer_photoevap_rate[0].value_in(units.MSun/units.yr) for disk in self.disks ] | units.MSun/units.yr,
             host_star = [ self.disked_stars[disk.host_star_id].key for disk in self.disks ],
         )
+    '''
+
+
+    #@property
+    #def star_particles (self):
+    #    return self.disked_stars[:].union(self.radiative_stars)
 
 
     @property
-    def star_particles (self):
-        return self.disked_stars[:].union(self.radiative_stars)
+    def disked_stars (self):
+        return self.star_particles.select_array(lambda disk_key: disk_key >= 0,
+            ['disk_key'])
+
+
+    @property
+    def radiative_stars (self):
+        return self.star_particles.select_array(lambda disk_key: disk_key < 0,
+            ['disk_key'])
 
 
     def add_star_particles (self, new_star_particles):
 
-        new_star_particles.radius = 0. | units.pc
+        mask_disked = new_star_particles.mass < 1.9 | units.MSun
 
-        new_disked_stars = new_star_particles.select_array(
-            lambda M: M < 1.9 | units.MSun, ['mass'])
-        new_radiative_stars = new_star_particles.select_array(
-            lambda M: M >= 1.9 | units.MSun, ['mass'])
+        start = len(self.star_particles)
 
-        new_radiative_stars.fuv_luminosity = FUV_luminosity_from_mass(
-            new_radiative_stars.mass)
+        self.star_particles.add_particles(new_star_particles)
 
-        self.radiative_stars.add_particles( new_radiative_stars )
+        for i in range(len(new_star_particles)):
+            self.star_particles[start+i].radius = 0.02 | units.pc
+            self.star_particles[start+i].initial_luminosity = \
+                self.star_particles[start+i].luminosity
 
+            if mask_disked[i]:
+                new_disk = disk_class.Disk(
+                    initial_disk_radii(new_star_particles.mass[i]), 
+                    initial_disk_masses(new_star_particles.mass[i]),
+                    new_star_particles[i].mass, self.codes[0].grid,
+                    self.codes[0].parameters.alpha)
 
-        disk_masses = initial_disk_masses(new_disked_stars.mass)
+                new_disk.host_star_id = start+i
+                new_disk.truncation_mass_loss = 0. | units.MSun
 
-        disk_radii = initial_disk_radii(new_disked_stars.mass)
+                self.disks.append(new_disk)
 
-        for i in range(len(new_disked_stars)):
-            new_disk = disk_class.Disk(disk_radii[i], disk_masses[i],
-                new_disked_stars[i].mass, self.codes[0].grid,
-                self.codes[0].parameters.alpha)
+                self.star_particles[start+i].disk_key = start+i
 
-            new_disked_stars[i].mass += new_disk.disk_mass
-            new_disked_stars[i].radius = 0.02 | units.pc
+            else:
 
-            new_disk.host_star_id = len(self.disks)
-            new_disk.truncation_mass_loss = 0. | units.MSun
+                self.disks.append(None)
 
-            self.disks.append( new_disk )
+                self.star_particles[start+i].initial_fuv_luminosity = \
+                    FUV_luminosity_from_mass(self.star_particles[start+i].mass)
 
-            self.disk_hash[new_disked_stars[i].key] = new_disk
-
-        self.disked_stars.add_particles( new_disked_stars )
-        self.disked_stars.radius = 0.02 | units.pc
+                self.star_particles[start+i].disk_key = -1
 
 
     def stop (self):
