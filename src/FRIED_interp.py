@@ -14,23 +14,30 @@ class FRIED_interpolator:
     '''
     FRIED interpolator object
     Performs linear interpolation on the FRIED grid
-    As there is a degeneracy between disk radius, disk mass and disk outer density, we neglect disk outer density
-    Interpolation can optionally be done in lin or log space, separately for each axis
+    As there is a degeneracy between disk radius, disk mass and disk outer density, 
+    we neglect disk outer density
+    Interpolation can optionally be done in lin or log space, separately for each 
+    axis
     '''
 
 
-    def __init__ (self, folder='.', logMstar=True, logF=True, logMdisk=True, logRdisk=True, verbosity=False):
+    def __init__ (self, folder='.', logMstar=True, logF=True, logMdisk=True, 
+            logRdisk=True, verbosity=False):
         '''
         Initialize FRIED_interpolator object
 
         folder: directory of FRIED grid data file (string)
-        logMstar: construct grid of the log of the host star mass (else linear) (boolean)
-        logF: construct grid of the log of the incident FUV field (else linear) (boolean)
+        logMstar: construct grid of the log of the host star mass (else linear) 
+            (boolean)
+        logF: construct grid of the log of the incident FUV field (else linear) 
+            (boolean)
         logMdisk: construct grid of the log of the disk mass (else linear) (boolean)
-        logRdisk: construct grid of the log of the disk radius (else linear) (boolean)
+        logRdisk: construct grid of the log of the disk radius (else linear) 
+            (boolean)
         '''
 
-        Mstar_grid, F_grid, Mdisk_grid, Rdisk_grid = np.loadtxt(folder+'/friedgrid.dat', usecols=(0,1,2,4), unpack=True)
+        Mstar_grid, F_grid, Mdisk_grid, Rdisk_grid = np.loadtxt(
+            folder+'/friedgrid.dat', usecols=(0,1,2,4), unpack=True)
         self._logMdot_grid = np.loadtxt(folder+'/friedgrid.dat', usecols=(5,))
 
         self._logMstar = logMstar
@@ -55,7 +62,8 @@ class FRIED_interpolator:
         ]).T
 
         self._interpolator = si.LinearNDInterpolator(self._grid, self._logMdot_grid)
-        self._backup_interpolator = si.NearestNDInterpolator(self._grid, self._logMdot_grid)
+        self._backup_interpolator = si.NearestNDInterpolator(self._grid,
+            self._logMdot_grid)
 
         self.backup_counter = 0
 
@@ -73,7 +81,7 @@ class FRIED_interpolator:
         Mdisk: disk mass (1D float array, shape (N))
         Rdisk: disk radius (1D float array, shape (N))
 
-        Returns mass loss rate for each set of parameters (1D float array, shape (N))
+        Returns mass loss rate for each set of parameters (1D float array, shape(N))
         '''
 
         try:
@@ -123,7 +131,8 @@ class FRIED_interpolator:
             Mdisk: disk mass (1D mass unit scalar array, shape (N))
             Rdisk: disk radius (1D length unit scalar array, shape (N))
 
-            Returns mass loss rate for each set of parameters (1D mass flux per time unit scalar array, shape (N))
+            Returns mass loss rate for each set of parameters (1D mass flux per 
+            time unit scalar array, shape (N))
             '''
 
             try:

@@ -10,19 +10,19 @@ import FRIED_interp
 
 
 G0 = 1.6e-3 * units.erg/units.s/units.cm**2
-kappa = 2e-21 / 1.008 * units.cm**2/units.amu 
+kappa = 2e-21 / 1.008 * units.cm**2/units.amu
 
 
-def initial_disk_masses (stellar_masses):
+def initial_disk_mass (stellar_mass):
 
-    return 0.1 * stellar_masses
-    #return (0.24 | units.MSun) * (stellar_masses.value_in(units.MSun))**0.73
+    #return 0.1 * stellar_mass
+    return (0.24 | units.MSun) * (stellar_mass.value_in(units.MSun))**0.73
 
 
-def initial_disk_radii (stellar_masses):
+def initial_disk_radius (stellar_mass):
 
-    return [400.]*len(stellar_masses) | units.AU
-    #return (200. | units.AU) * (stellar_masses.value_in(units.MSun))**0.45
+    #return 400. | units.AU
+    return (200. | units.AU) * (stellar_mass.value_in(units.MSun))**0.45
 
 
 def FUV_luminosity_from_mass (M, folder='../data/'):
@@ -38,38 +38,30 @@ def FUV_luminosity_from_mass (M, folder='../data/'):
 
     m = M.value_in(units.MSun)
 
-    N = len(M)
-    n = len(mass)
+    if m < mass[0]:
+        return 10.**(A[0]*np.log10(m) + B[0]) | units.LSun
+    elif m > mass[-1]:
+        return 10.**(A[-1]*np.log10(mass[-1]) + B[-1]) | units.LSun
+    else:
+        i = np.argmax(mass > m)-1
+        return 10.**(A[i]*np.log10(m) + B[i]) | units.LSun
 
-    L = np.zeros(N)
 
-    for i in range(n-1):
-
-        mask = (m >= mass[i])*(m < mass[i+1])
-
-        L[ mask ] = 10.**(A[i]*np.log10(mass[i]) + B[i])
-
-    mask = m >= mass[-1]
-
-    L[ mask ] = 10.**(A[-1]*np.log10(mass[-1]) + B[-1])
-
-    return L | units.LSun
+class Temp:
+    disk_active = False
 
 
 class PPD_population:
     '''
-    [IMPORTANT]: make a channel between this classes' star_particles and the main 
-    set of star particles! This class requires their positions, and alters their
-    masses [1], also during initialization! It adds the mass of the disk to the
-    total, gravitational mass.
-
-    [1] PPD masses can be a significant fraction of the stellar mass; therefore,
-        it is important for gravity.
+    [IMPORTANT]: when coupling with gravity or stellar evolution, be careful with
+    channels! Because of the different mass components, this is non-trivial. See
+    below for convenience functions to set these up.
     '''
 
     def __init__ (self, alpha=1e-3, mu=2.33, number_of_cells=330,
             number_of_workers=4, r_min=0.01|units.AU, r_max=3000.|units.AU,
-            fried_folder='./', hydro=None):
+            fried_folder='../data/', sph_hydro=None, grid_hydro=None,
+            stellar_evolution=False):
         '''
         alpha: dimensionless viscosity parameter of PPDs (float)
         number_of_cells: number of grid cells of VADER codes (int)
@@ -103,7 +95,18 @@ class PPD_population:
             self.codes[i].set_parameter(4, (mu*1.008*constants.u).value_in(units.g))
 
 
-        self.hydro = hydro
+        if grid_hydro is not None:
+            self.compute_epe_rate = self.compute_epe_rate_from_radtrans
+            if sph_hydro is not None:
+                print ("Both grid and SPH is unphysical, please pick one.")
+                print ("Defaulting to grid.")
+        else:
+            self.compute_epe_rate = self.compute_epe_rate_from_stars
+
+        self.sph_hydro = sph_hydro
+        self.grid_hydro = grid_hydro
+
+        self.stellar_evolution = stellar_evolution
 
         self.interpolator = FRIED_interp.FRIED_interpolator(verbosity=False,
             folder=fried_folder)
@@ -113,30 +116,16 @@ class PPD_population:
         self.star_particles = Particles()
         self.disks = []
 
-        #self.star_particles.add_calculated_attribute('total_mass', 
-        #    lambda stellar_mass, disk_mass: stellar_mass + disk_mass )
-
-
-        # disk properties available from particles, makes for easier saving
-
-        # utility function, gets attribute from disk or returns an alternative
-        # if star has no disk (typically, massive stars)
-        check_attribute = lambda disk_key, attribute, alternative: \
-            alternative if disk_key < 0 else \
-            getattr(self.disks[disk_key], attribute)
-
         # disk attributes to save with particles
-        disk_attributes = ['accreted_mass', 'disk_gas_mass', 'disk_dust_mass',
-            'disk_radius', 'outer_photoevap_rate',
+        self.disk_attributes = ['accreted_mass', 'disk_gas_mass', 'disk_dust_mass',
+            'disk_mass', 'truncation_mass_loss', 'disk_radius',
+            'outer_photoevap_rate',
             'disk_active', 'disk_dispersed', 'disk_convergence_failure']
 
         # alternatives for massive stars
-        alternatives = [0.|units.MSun, 0.|units.MSun, 0.|units.MSun, 
-            0.|units.AU, 0.|units.MSun/units.yr, False, False, False]
-
-        for attr, alt in zip(disk_attributes, alternatives):
-            self.star_particles.add_calculated_attribute(attr,
-                lambda disk_key: check_attribute (disk_key, attr, alt) )
+        self.alternatives = [0.|units.MSun, 0.|units.MSun, 0.|units.MSun, 
+            0.|units.MSun, 0.|units.MSun, 0.|units.AU, 0.|units.MSun/units.yr,
+            False, False, False]
 
         self.star_particles.add_calculated_attribute('total_mass',
             lambda mass, disk_mass, accreted_mass: mass + disk_mass + accreted_mass)
@@ -147,18 +136,22 @@ class PPD_population:
         # stars typically brighten but lose mass, in contrast with fuv luminosity
         # trend. Instead, it is scaled by total luminosity, effectively assuming 
         # constant surface temperature
-        self.star_particles.fuv_luminosity =             \
-            self.star_particles.initial_fuv_luminosity * \
-           (self.star_particles.luminosity /             \
-            self.star_particles.initial_luminosity)
+        if self.grid_hydro is None and self.stellar_evolution:
+            self.star_particles.fuv_luminosity =             \
+                self.star_particles.initial_fuv_luminosity * \
+               (self.star_particles.luminosity /             \
+                self.star_particles.initial_luminosity)
+        else:
+            self.star_particles.fuv_luminosity = \
+                self.star_particles.initial_fuv_luminosity
 
         active_disks = []
 
-        for i in range(len(self.disks)):
-            if self.disks[i] is not None and self.disks[i].disk_active:
-                self.disks[i].outer_photoevap_rate = \
-                    self.compute_epe_rate(self.disks[i])
-                active_disks.append(self.disks[i])
+        for disk in self.disks:
+            if disk is not None and disk.disk_active:
+                disk.outer_photoevap_rate = self.compute_epe_rate(disk)
+                disk.central_mass = self.star_particles[disk.host_star_id].mass
+                active_disks.append(disk)
 
         disk_class.run_disks(self.codes, active_disks, end_time - self.model_time)
 
@@ -166,10 +159,15 @@ class PPD_population:
 
         self.model_time = end_time
 
+        self.copy_from_disks()
 
-    def compute_epe_rate (self, disk):
+
+    def compute_epe_rate_from_stars (self, disk):
         '''
-        Computer external photoevaporation rate for a disk from the FRIED grid
+        Compute external photoevaporation rate for a disk from the FRIED grid
+        Use radiation from bright stars (>1.9 MSun)
+        Radiative transfer assumes geometric attenuation (1/r^2), with potential
+        manual integration through density field (if sph_hydro is not None)
 
         disk: Disk object to compute EPE rate for
         '''
@@ -186,7 +184,7 @@ class PPD_population:
 
                 host_star = self.star_particles[disk.host_star_id]
 
-                R = (host_star.position - self.radiative_stars[i].position).length()
+                R = (host_star.position - self.star_particles[i].position).length()
 
                 R_disk = disk.disk_radius.value_in(units.cm)/1e14
                 if R < 5e17/4.*R_disk**0.5 | units.cm:
@@ -194,10 +192,29 @@ class PPD_population:
 
                 F += self.star_particles[i].fuv_luminosity/(4.*np.pi*R*R)
 
-                if self.hydro is not None:
-                    tau = optical_depth_between_points(self.hydro,
-                        host_star.position, self.radiative_stars[i].position, kappa)
+                if self.sph_hydro is not None:
+                    tau = optical_depth_between_points(self.sph_hydro,
+                        host_star.position, self.star_particles[i].position, kappa)
                     F *= np.exp(-tau)
+
+        return self.interpolator.interp_amuse(disk.central_mass, F,
+            disk.disk_gas_mass, disk.disk_radius)
+
+
+    def compute_epe_rate_from_radtrans (self, disk):
+        '''
+        Compute external photoevaporation rate for a disk from the FRIED grid
+        Use radiation field from radiation-hydrodynamical grid code
+
+        disk: Disk object to compute EPE rate for
+        '''
+
+        host_star = self.star_particles[disk.host_star_id]
+
+        i,j,k = self.grid_hydro.get_index_of_position(host_star.x, host_star.y,
+            host_star.z)
+
+        F = self.grid_hydro.get_grid_flux_photoelectric(i,j,k)
 
         return self.interpolator.interp_amuse(disk.central_mass, F,
             disk.disk_gas_mass, disk.disk_radius)
@@ -235,13 +252,19 @@ class PPD_population:
             r_min = self._periastron_distance(collided_particles)
 
             for i in range(2):
-                if collided_particles[i].key in self.disked_stars.key:
+
+                disk_id = np.argmax(
+                    collided_particles[i].key == self.star_particles.key)
+                star_id = np.argmax(
+                    collided_particles[1-i].key == self.star_particles.key)
+
+                if self.star_particles[disk_id].disk_key >= 0:
 
                     r_new = r_min/3. * \
-                        (collided_particles[i].mass/ \
-                         collided_particles[1-i].mass)**0.32
+                        (self.star_particles[disk_id].mass/ \
+                         self.star_particles[star_id].mass)**0.32
 
-                    disk = self.disk_hash[collided_particles[i].key]
+                    disk = self.disks[disk_id]
 
                     mask = disk.grid.r > r_new
 
@@ -254,6 +277,12 @@ class PPD_population:
                     disk.grid[mask].pressure = (1e-12 | units.g/units.cm**2) * T * const
 
                     self.star_particles[disk.host_star_id].radius = 0.49 * r_min
+
+                else:
+
+                    self.star_particles[disk_id].radius = 0.49 * r_min
+
+        self.copy_from_disks()
 
 
     '''
@@ -293,6 +322,8 @@ class PPD_population:
 
     def add_star_particles (self, new_star_particles):
 
+        new_star_particles.stellar_mass = new_star_particles.mass
+
         mask_disked = new_star_particles.mass < 1.9 | units.MSun
 
         start = len(self.star_particles)
@@ -300,14 +331,16 @@ class PPD_population:
         self.star_particles.add_particles(new_star_particles)
 
         for i in range(len(new_star_particles)):
+            self.star_particles[start+i].fuv_ambient_flux = -1. | G0
             self.star_particles[start+i].radius = 0.02 | units.pc
-            self.star_particles[start+i].initial_luminosity = \
-                self.star_particles[start+i].luminosity
+            if self.stellar_evolution:
+                self.star_particles[start+i].initial_luminosity = \
+                    self.star_particles[start+i].luminosity
 
             if mask_disked[i]:
                 new_disk = disk_class.Disk(
-                    initial_disk_radii(new_star_particles.mass[i]), 
-                    initial_disk_masses(new_star_particles.mass[i]),
+                    initial_disk_radius(new_star_particles.mass[i]), 
+                    initial_disk_mass(new_star_particles.mass[i]),
                     new_star_particles[i].mass, self.codes[0].grid,
                     self.codes[0].parameters.alpha)
 
@@ -317,206 +350,95 @@ class PPD_population:
                 self.disks.append(new_disk)
 
                 self.star_particles[start+i].disk_key = start+i
+                self.star_particles[start+i].initial_fuv_luminosity = 0.| units.LSun
 
             else:
 
-                self.disks.append(None)
+                self.disks.append(Temp())
 
                 self.star_particles[start+i].initial_fuv_luminosity = \
                     FUV_luminosity_from_mass(self.star_particles[start+i].mass)
 
                 self.star_particles[start+i].disk_key = -1
 
+        self.copy_from_disks()
+
+
+    def copy_from_disks (self):
+        for attr, alt in zip(self.disk_attributes, self.alternatives):
+            for i in range(len(self.star_particles)):
+                if self.star_particles[i].disk_key < 0:
+                    val = alt
+                else:
+                    val = getattr(self.disks[self.star_particles[i].disk_key], attr)
+                setattr(self.star_particles[i], attr, val)
+
+
+    '''
+    Convenience functions to set up channels between an external particle set,
+    this code's particle set, and coupled gravity and stellar evolution codes.
+    The gravity code needs the total mass, the stellar code the host star mass, etc
+    '''
+
+    def setup_self_channels (self, particles):
+        '''
+        Set up channels between own star_particles and external set
+        Handles the separation between mass components
+
+        particle: external particle set to set up channels with
+        '''
+
+        channel_from_self = self.star_particles.new_channel_to(particles, 
+            attributes=['total_mass', 'radius'], 
+            target_names=['total_mass', 'radius'])
+        if self.stellar_evolution:
+            channel_to_self = particles.new_channel_to(self.star_particles,
+                attributes=['stellar_mass', 'x', 'y', 'z', 'luminosity'],
+                target_names=['mass', 'x', 'y', 'z', 'luminosity'])
+        else:
+            channel_to_self = particles.new_channel_to(self.star_particles,
+                attributes=['stellar_mass', 'x', 'y', 'z'],
+                target_names=['mass', 'x', 'y', 'z'])
+
+        return channel_from_self, channel_to_self
+
+
+    def setup_gravity_channels (self, particles, gravity):
+        '''
+        Set up channels between gravity code particles and external set
+        Handles the separation between mass components
+
+        particle: external particle set to set up channels with
+        gravity: gravity code to set up channels with
+        '''
+
+        channel_from_gravity = gravity.particles.new_channel_to(particles,
+            attributes=['x', 'y', 'z', 'vx', 'vy', 'vz'],
+            target_names=['x', 'y', 'z', 'vx', 'vy', 'vz'])
+        channel_to_gravity = particles.new_channel_to(gravity.particles,
+            attributes=['total_mass', 'radius', 'x', 'y', 'z', 'vx', 'vy', 'vz'],
+            target_names=['mass', 'radius', 'x', 'y', 'z', 'vx', 'vy', 'vz'])
+
+        return channel_from_gravity, channel_to_gravity
+
+
+    def setup_stellar_channel (self, particles, stellar, extra_attributes=[]):
+        '''
+        Set up channel between stellar code particles and external set
+        Handles the separation between mass components
+
+        particle: external particle set to set up channel with
+        stellar: stellar evolution code to set up channel with
+        '''
+
+        channel_from_stellar = stellar.particles.new_channel_to(particles,
+            attributes=['mass', 'luminosity', 'radius'].extend(extra_attributes),
+            target_names=['stellar_mass', 'luminosity', 'stellar_radius'].extend(
+                extra_attributes))
+
+        return channel_from_stellar
+
 
     def stop (self):
 
         disk_class.stop_codes(self.codes)
-
-
-def test_truncation ():
-
-    from amuse.community.ph4.interface import ph4
-    from amuse.units import nbody_system
-
-    stars = Particles(2, 
-        mass = 2*[1.] | units.MSun,
-        x = [-1., 1.] | units.parsec,
-        y = [-400., 400.] | units.AU,
-        z = [0., 0.] | units.parsec,
-        vx = [100., -100.] | units.parsec/units.Myr,
-        vy = [0., 0.] | units.parsec/units.Myr,
-        vz = [0., 0.] | units.parsec/units.Myr
-    )
-
-    ppd_code = PPD_population(number_of_workers=2, fried_folder='../data/')
-    ppd_code.add_star_particles(stars)
-
-
-    converter = nbody_system.nbody_to_si(1.|units.MSun, 1.|units.parsec)
-    gravity = ph4(converter)
-
-    channels = {
-        'ppd_to_star': ppd_code.star_particles.new_channel_to(stars),
-        'star_to_ppd': stars.new_channel_to(ppd_code.star_particles),
-        'grav_to_star': gravity.particles.new_channel_to(stars),
-        'star_to_grav': stars.new_channel_to(gravity.particles)
-    }
-
-    gravity.particles.add_particles(stars)
-
-
-    collision_detector = gravity.stopping_conditions.collision_detection
-    collision_detector.enable()
-
-
-    dt = 1. | units.kyr
-    t_end = 15. | units.kyr
-    time = 0. | units.kyr
-
-    counter = 0
-
-    while time < t_end:
-
-        print ("Evolving until {a} kyr".format(a=(time+dt).value_in(units.kyr)))
-
-        gravity.evolve_model( time + dt/2. )
-        channels['grav_to_star'].copy()
-
-        while collision_detector.is_set():
-
-            print ("Encounter at t={a} Myr".format(a=gravity.model_time.value_in(units.Myr)))
-
-            channels['star_to_ppd'].copy()
-            ppd_code.resolve_encounters (collision_detector)
-            channels['ppd_to_star'].copy()
-
-            channels['star_to_grav'].copy()
-            gravity.evolve_model( time + dt/2. )
-            channels['grav_to_star'].copy()
-
-
-        channels['star_to_ppd'].copy()
-        ppd_code.evolve_model( time + dt )
-        channels['ppd_to_star'].copy()
-
-
-        channels['star_to_grav'].copy()
-        gravity.evolve_model( time + dt )
-        channels['grav_to_star'].copy()
-
-        while collision_detector.is_set():
-
-            print ("Encounter at t={a} Myr".format(a=gravity.model_time.value_in(units.Myr)))
-
-            channels['star_to_ppd'].copy()
-            ppd_code.resolve_encounters (collision_detector)
-            channels['ppd_to_star'].copy()
-
-            channels['star_to_grav'].copy()
-            gravity.evolve_model( time + dt )
-            channels['grav_to_star'].copy()
-
-        counter += 1
-        time += dt
-
-
-def test_radiation_field ():
-
-    from amuse.community.ph4.interface import ph4
-    from amuse.community.huayno.interface import Huayno
-    from amuse.units import nbody_system
-
-    import matplotlib.pyplot as plt
-
-    stars = Particles(2, 
-        mass = [30., 0.1] | units.MSun,
-        x = [0., 1.] | units.parsec,
-        y = [0., 0.] | units.AU,
-        z = [0., 0.] | units.parsec,
-        vx = [0., 0.] | units.parsec/units.Myr,
-        vy = [0., 359.8] | units.ms,
-        vz = [0., 0.] | units.parsec/units.Myr
-    )
-
-    ppd_code = PPD_population(number_of_workers=2)
-    ppd_code.add_star_particles(stars)
-
-
-    converter = nbody_system.nbody_to_si(1.|units.MSun, 1.|units.parsec)
-    gravity = Huayno(converter)
-
-    channels = {
-        'ppd_to_star': ppd_code.star_particles.new_channel_to(stars),
-        'star_to_ppd': stars.new_channel_to(ppd_code.star_particles),
-        'grav_to_star': gravity.particles.new_channel_to(stars),
-        'star_to_grav': stars.new_channel_to(gravity.particles)
-    }
-
-    gravity.particles.add_particles(stars)
-
-
-    collision_detector = gravity.stopping_conditions.collision_detection
-    collision_detector.enable()
-
-
-    dt = 1. | units.kyr
-    t_end = 15. | units.kyr
-    time = 0. | units.kyr
-
-    counter = 0
-
-    while time < t_end:
-
-        print ("Evolving until {a} kyr".format(a=(time+dt).value_in(units.kyr)))
-
-        gravity.evolve_model( time + dt/2. )
-        channels['grav_to_star'].copy()
-
-        while collision_detector.is_set():
-
-            print ("Encounter at t={a} Myr".format(a=gravity.model_time.value_in(units.Myr)))
-
-            channels['star_to_ppd'].copy()
-            ppd_code.resolve_encounters (collision_detector)
-            channels['ppd_to_star'].copy()
-
-            channels['star_to_grav'].copy()
-            gravity.evolve_model( time + dt/2. )
-            channels['grav_to_star'].copy()
-
-
-        channels['star_to_ppd'].copy()
-        ppd_code.evolve_model( time + dt )
-        channels['ppd_to_star'].copy()
-
-
-        channels['star_to_grav'].copy()
-        gravity.evolve_model( time + dt )
-        channels['grav_to_star'].copy()
-
-        while collision_detector.is_set():
-
-            print ("Encounter at t={a} Myr".format(a=gravity.model_time.value_in(units.Myr)))
-
-            channels['star_to_ppd'].copy()
-            ppd_code.resolve_encounters (collision_detector)
-            channels['ppd_to_star'].copy()
-
-            channels['star_to_grav'].copy()
-            gravity.evolve_model( time + dt )
-            channels['grav_to_star'].copy()
-
-        plt.scatter(stars[0].x.value_in(units.pc), stars[0].y.value_in(units.pc), c='r')
-        plt.scatter(stars[1].x.value_in(units.pc), stars[1].y.value_in(units.pc), c='b')
-
-        counter += 1
-        time += dt
-
-    plt.show()
-
-
-if __name__ == '__main__':
-
-    #test_truncation ()
-
-    test_radiation_field ()
