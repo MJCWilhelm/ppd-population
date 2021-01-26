@@ -1,7 +1,7 @@
 import numpy as np
 import matplotlib.pyplot as plt
 
-from ppd_population import PPD_population
+from ppd_population import PPD_population, FUV_luminosity_from_mass
 
 
 def test_truncation ():
@@ -253,12 +253,12 @@ def test_population (N=10):
     gravity.particles.add_particles(stars)
 
 
-    collision_detector = gravity.stopping_conditions.collision_detection
-    collision_detector.enable()
+    ppd_code.collision_detector = gravity.stopping_conditions.collision_detection
+    ppd_code.collision_detector.enable()
 
 
     dt = 1. | units.kyr
-    t_end = 100. | units.kyr
+    t_end = 10. | units.kyr
     time = 0. | units.kyr
 
     counter = 0
@@ -277,12 +277,13 @@ def test_population (N=10):
         gravity.evolve_model( time + dt/2. )
         channels['grav_to_star'].copy()
 
-        while collision_detector.is_set():
+        while ppd_code.collision_detector.is_set():
 
-            print ("Encounter at t={a} Myr".format(a=gravity.model_time.value_in(units.Myr)))
+            print ("Encounter at t={a} Myr".format(
+                a=gravity.model_time.value_in(units.Myr)))
 
             channels['star_to_ppd'].copy()
-            ppd_code.resolve_encounters (collision_detector)
+            ppd_code.resolve_encounters()
             channels['ppd_to_star'].copy()
 
             channels['star_to_grav'].copy()
@@ -299,12 +300,13 @@ def test_population (N=10):
         gravity.evolve_model( time + dt )
         channels['grav_to_star'].copy()
 
-        while collision_detector.is_set():
+        while ppd_code.collision_detector.is_set():
 
-            print ("Encounter at t={a} Myr".format(a=gravity.model_time.value_in(units.Myr)))
+            print ("Encounter at t={a} Myr".format(
+                a=gravity.model_time.value_in(units.Myr)))
 
             channels['star_to_ppd'].copy()
-            ppd_code.resolve_encounters (collision_detector)
+            ppd_code.resolve_encounters()
             channels['ppd_to_star'].copy()
 
             channels['star_to_grav'].copy()
@@ -325,12 +327,153 @@ def test_population (N=10):
     plt.yscale('log')
 
 
+def test_single_truncation (dm):
+
+    from amuse.units import units, constants
+    from amuse.community.vader.interface import Vader
+    from disk_class import Disk
+
+    viscous = Vader(mode='pedisk', redirection='none')
+
+    viscous.initialize_keplerian_grid(300, False, 0.01|units.AU, 3000.|units.AU,
+        1.|units.MSun)
+
+    alpha = 1e-3
+
+    viscous.parameters.alpha = alpha
+    viscous.parameters.post_timestep_function = True
+    viscous.parameters.maximum_tolerated_change = 1E99
+    viscous.parameters.number_of_user_parameters = 7
+    viscous.parameters.inner_pressure_boundary_torque = 0. | units.g*units.cm**2./units.s**2.
+
+    viscous.set_parameter(2, 1E-12)
+    viscous.set_parameter(4, (2.33*1.008*constants.u).value_in(units.g))
+
+
+    disk = Disk(100.|units.AU, 0.1|units.MSun, 1.|units.MSun, viscous.grid, alpha)
+    disk.viscous = viscous
+
+    m1 = disk.disk_gas_mass.value_in(units.MSun)
+
+    if dm > m1:
+        dm = m1
+    disk.evaporate_mass ( dm | units.MSun )
+
+    m2 = disk.disk_gas_mass.value_in(units.MSun)
+
+    print (m1-m2-dm)
+
+    viscous.stop()
+
+
+def test_restartibility (N=10):
+
+    from amuse.community.ph4.interface import ph4
+    from amuse.community.huayno.interface import Huayno
+    from amuse.units import nbody_system, units, constants
+    from amuse.datamodel import Particles
+    from amuse.ic.brokenimf import MultiplePartIMF
+    from amuse.ic.plummer import new_plummer_model
+    from ppd_population import restart_population
+
+    kroupa_imf = MultiplePartIMF(mass_boundaries=[0.08, 0.5, 1.9]|units.MSun,
+        alphas=[-1.3, -2.3])
+
+    mass = kroupa_imf.next_mass(N)
+
+
+    converter = nbody_system.nbody_to_si(mass.sum(), 1.|units.pc)
+    stars = new_plummer_model(N, converter)
+    stars.mass = mass
+    stars.fuv_luminosity = 0. | units.LSun
+
+    stars.add_particles(Particles(1,
+        mass=30.|units.MSun,
+        x=0.|units.pc,
+        y=0.|units.pc,
+        z=0.|units.pc,
+        vx=0.|units.kms,
+        vy=0.|units.kms,
+        vz=0.|units.kms,
+        fuv_luminosity=FUV_luminosity_from_mass(30.|units.MSun)
+    ))
+
+
+    ppds1 = PPD_population(number_of_workers=1)
+    ppds1.add_star_particles(stars)
+
+    ppds2 = PPD_population(number_of_workers=1)
+    ppds2.add_star_particles(stars)
+
+
+    ppds1.evolve_model(1.|units.kyr)
+
+    ppds2.evolve_model(1.|units.kyr)
+
+    ppds2.write_out()
+
+    ppds3 = restart_population('./', 0)
+
+    ppds1.evolve_model(2.|units.kyr)
+
+    ppds3.evolve_model(2.|units.kyr)
+
+
+    fig = plt.figure()
+    ax1 = fig.add_subplot(211)
+    ax2 = fig.add_subplot(212)
+
+    fig2 = plt.figure()
+    ax3 = fig2.add_subplot(211)
+    ax4 = fig2.add_subplot(212)
+
+    ax1.set_xscale('log')
+    ax1.set_yscale('log')
+    ax2.set_xscale('log')
+    ax2.set_yscale('log')
+
+    ax1.set_xlabel('R [AU]')
+    ax1.set_ylabel('d$\\Sigma$')
+    ax2.set_xlabel('R [AU]')
+    ax2.set_ylabel('dP')
+
+    ax3.set_xscale('log')
+    ax3.set_yscale('log')
+    ax4.set_xscale('log')
+    ax4.set_yscale('log')
+
+    ax3.set_xlabel('R [AU]')
+    ax3.set_ylabel('$\\Sigma$ [g cm$^{-2}$]]')
+    ax4.set_xlabel('R [AU]')
+    ax4.set_ylabel('P [g s$^{-2}$]')
+
+    for i in range(N+1):
+        if ppds1.star_particles[i].disk_key >= 0:
+            ds = np.abs((ppds1.disks[i].grid.column_density - ppds3.disks[i].grid.column_density)/ppds1.disks[i].grid.column_density)
+            ax1.plot(ppds1.disks[i].grid.r.value_in(units.AU), ds)
+
+            dp = np.abs((ppds1.disks[i].grid.pressure - ppds3.disks[i].grid.pressure)/ppds1.disks[i].grid.pressure)
+            ax2.plot(ppds1.disks[i].grid.r.value_in(units.AU), dp)
+
+            ax3.plot(ppds1.disks[i].grid.r.value_in(units.AU), ppds1.disks[i].grid.column_density.value_in(units.g/units.cm**2))
+
+            ax4.plot(ppds1.disks[i].grid.r.value_in(units.AU), ppds1.disks[i].grid.pressure.value_in(units.g/units.s**2))
+
+    print ((ppds1.star_particles.disk_dust_mass - ppds3.star_particles.disk_dust_mass).value_in(units.MSun))
+    
+
+
 if __name__ == '__main__':
 
     #test_truncation()
 
     #test_radiation_field()
 
-    test_population()
+    #test_population()
+
+    #for dm in np.logspace(-3, -1):
+    #    test_single_truncation(dm)
+
+    test_restartibility()
 
     plt.show()

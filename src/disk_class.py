@@ -1,4 +1,5 @@
 import numpy as np
+import matplotlib.pyplot as plt
 
 import queue
 import threading
@@ -145,6 +146,12 @@ class Disk:
                 # If still fails, give up hope
                 print ("Absolute convergence failure at {a} Myr".format(
                     a=self.model_time.value_in(units.Myr)), flush=True)
+                plt.plot(self.viscous.grid.r.value_in(units.AU), self.viscous.grid.column_density.value_in(units.g/units.cm**2))
+                plt.xscale('log')
+                plt.yscale('log')
+                plt.axvline(self.disk_radius.value_in(units.AU))
+                print (self.central_mass.value_in(units.MSun), self.outer_photoevap_rate.value_in(units.MSun/units.yr))
+                plt.show()
                 self.disk_convergence_failure = True
 
 
@@ -236,6 +243,12 @@ class Disk:
             except:
                 print ("Absolute convergence failure at {a} Myr".format(
                     a=self.model_time.value_in(units.Myr)), flush=True)
+                plt.plot(self.viscous.grid.r.value_in(units.AU), self.viscous.grid.column_density.value_in(units.g/units.cm**2))
+                plt.xscale('log')
+                plt.yscale('log')
+                plt.axvline(self.disk_radius.value_in(units.AU))
+                print (self.central_mass.value_in(units.MSun), self.outer_photoevap_rate.value_in(units.MSun/units.yr))
+                plt.show()
                 self.disk_convergence_failure = True
 
 
@@ -290,6 +303,37 @@ class Disk:
         Sigma = Sigma_0 * (rc/r) * np.exp(-r/rc) * (r <= rd) + lower_density
 
         return Sigma
+
+
+    def evaporate_mass (self, mass_to_remove):
+
+        N = len(self.grid.r)
+        removed_mass = 0. | units.MSun
+
+        sigma_0 = self.viscous.get_parameter(2) | units.g/units.cm**2
+
+        for i in range(N):
+            if self.grid[N-1-i].column_density > sigma_0:
+                removable_mass = (self.grid[N-1-i].column_density - sigma_0)*self.grid[N-1-i].area
+
+                if removed_mass + removable_mass > mass_to_remove:
+                    removable_mass = mass_to_remove - removed_mass
+                    dsigma = removable_mass/self.grid[N-1-i].area
+                    sigma = self.grid[N-1-i].column_density - dsigma
+
+                    self.grid[N-1-i].column_density = sigma
+                    self.grid[N-1-i].pressure = sigma * constants.kB / \
+                        (self.mu*1.008*constants.u) * \
+                        self.Tm/np.sqrt(self.grid[N-1-i].r.value_in(units.AU))
+
+                    return
+
+                else:
+                    removed_mass += removable_mass
+                    self.grid[N-1-i].column_density = sigma_0
+                    self.grid[N-1-i].pressure = sigma_0 * constants.kB / \
+                        (self.mu*1.008*constants.u) * \
+                        self.Tm/np.sqrt(self.grid[N-1-i].r.value_in(units.AU))
 
 
     @property
