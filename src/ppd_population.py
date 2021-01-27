@@ -177,7 +177,7 @@ class PPD_population:
 
         if len(self.radiative_stars) == 0 or disk.disk_ejected:
             #print ("No radiative stars")
-            host_star.fuv_ambient_flux = 0. | G0
+            host_star.fuv_ambient_flux = -1. | G0
             return 1e-10 | units.MSun/units.yr
 
         F = 0. | G0
@@ -217,10 +217,10 @@ class PPD_population:
 
         host_star = self.star_particles[disk.host_star_id]
 
-        i,j,k = self.grid_hydro.get_index_of_position(host_star.x, host_star.y,
+        i,j,k,m,n = self.grid_hydro.get_index_of_position(host_star.x, host_star.y,
             host_star.z)
 
-        F = self.grid_hydro.get_grid_flux_photoelectric(i,j,k)
+        F = self.grid_hydro.get_grid_flux_photoelectric(i,j,k,m,n)
 
         host_star.fuv_ambient_flux = F
 
