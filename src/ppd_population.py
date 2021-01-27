@@ -435,7 +435,7 @@ class PPD_population:
         write_set_to_file(self.star_particles, 
             filepath+'/viscous_particles_i{a:05}.hdf5'.format(
                 a=self.output_counter), 'hdf5', timestamp=self.model_time, 
-            overwrite=overwrite)
+            overwrite_file=overwrite)
 
         param_dump = open(filepath+'/viscous_params_i{a:05}.pickle'.format(
             a=self.output_counter), 'wb')
@@ -463,7 +463,7 @@ class PPD_population:
 
         write_set_to_file(grids, filepath+'/viscous_grids_i{a:05}.hdf5'.format(
             a=self.output_counter), 'hdf5', timestamp=self.model_time, 
-            overwrite=overwrite)
+            overwrite_file=overwrite)
 
 
 def restart_population (filepath, input_counter, number_of_workers=4,
