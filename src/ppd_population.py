@@ -299,14 +299,20 @@ class PPD_population:
 
     @property
     def disked_stars (self):
-        return self.star_particles.select_array(lambda disk_key: disk_key >= 0,
-            ['disk_key'])
+        if len(self.star_particles):
+            return self.star_particles.select_array(lambda disk_key: disk_key >= 0,
+                ['disk_key'])
+        else:
+            return self.star_particles
 
 
     @property
     def radiative_stars (self):
-        return self.star_particles.select_array(lambda disk_key: disk_key < 0,
-            ['disk_key'])
+        if len(self.star_particles):
+            return self.star_particles.select_array(lambda disk_key: disk_key < 0,
+                ['disk_key'])
+        else:
+            return self.star_particles
 
 
     def add_star_particles (self, new_star_particles):
@@ -426,7 +432,24 @@ class PPD_population:
 
     def write_out (self, filepath='./', overwrite=True):
 
+        write_set_to_file(self.star_particles, 
+            filepath+'/viscous_particles_i{a:05}.hdf5'.format(
+                a=self.output_counter), 'hdf5', timestamp=self.model_time, 
+            overwrite=overwrite)
+
+        param_dump = open(filepath+'/viscous_params_i{a:05}.pickle'.format(
+            a=self.output_counter), 'wb')
+        pickle.dump(self._params, param_dump)
+        param_dump.close()
+
+        self.output_counter += 1
+
         N_disks = len(self.disked_stars)
+
+        if N_disks == 0:
+            print ("No disks to write!")
+            return
+
         N_grid = len(self.codes[0].grid.r)
 
         grids = new_regular_grid((N_disks, N_grid), [1., 1.], axes_names='nm')
@@ -441,18 +464,6 @@ class PPD_population:
         write_set_to_file(grids, filepath+'/viscous_grids_i{a:05}.hdf5'.format(
             a=self.output_counter), 'hdf5', timestamp=self.model_time, 
             overwrite=overwrite)
-
-        write_set_to_file(self.star_particles, 
-            filepath+'/viscous_particles_i{a:05}.hdf5'.format(
-                a=self.output_counter), 'hdf5', timestamp=self.model_time, 
-            overwrite=overwrite)
-
-        param_dump = open(filepath+'/viscous_params_i{a:05}.pickle'.format(
-            a=self.output_counter), 'wb')
-        pickle.dump(self._params, param_dump)
-        param_dump.close()
-
-        self.output_counter += 1
 
 
 def restart_population (filepath, input_counter, number_of_workers=4,
