@@ -150,7 +150,7 @@ class Disk:
                 plt.xscale('log')
                 plt.yscale('log')
                 plt.axvline(self.disk_radius.value_in(units.AU))
-                print (self.central_mass.value_in(units.MSun), self.outer_photoevap_rate.value_in(units.MSun/units.yr))
+                print (self.central_mass.value_in(units.MSun), self.outer_photoevap_rate.value_in(units.MSun/units.yr), dt.value_in(units.kyr), flush=True)
                 plt.show()
                 self.disk_convergence_failure = True
 
@@ -247,7 +247,7 @@ class Disk:
                 plt.xscale('log')
                 plt.yscale('log')
                 plt.axvline(self.disk_radius.value_in(units.AU))
-                print (self.central_mass.value_in(units.MSun), self.outer_photoevap_rate.value_in(units.MSun/units.yr))
+                print (self.central_mass.value_in(units.MSun), self.outer_photoevap_rate.value_in(units.MSun/units.yr), dt.value_in(units.kyr), flush=True)
                 plt.show()
                 self.disk_convergence_failure = True
 

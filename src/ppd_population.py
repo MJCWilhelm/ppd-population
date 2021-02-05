@@ -2,6 +2,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 
 import pickle
+from os import path
 
 from amuse.units import units, constants
 from amuse.datamodel import Particles, new_regular_grid
@@ -63,7 +64,8 @@ class PPD_population:
 
     def __init__ (self, alpha=1e-3, mu=2.33, number_of_cells=330,
             number_of_workers=4, r_min=0.01|units.AU, r_max=3000.|units.AU,
-            fried_folder='../data/', sph_hydro=None, grid_hydro=None):
+            begin_time=0.|units.Myr, fried_folder='../data/', 
+            sph_hydro=None, grid_hydro=None):
         '''
         alpha: dimensionless viscosity parameter of PPDs (float)
         number_of_cells: number of grid cells of VADER codes (int)
@@ -83,6 +85,7 @@ class PPD_population:
             'mu': mu,
             'r_min': r_min,
             'r_max': r_max,
+            'n_cells': number_of_cells,
             'fried_folder': fried_folder,
         }
 
@@ -121,7 +124,7 @@ class PPD_population:
         self.interpolator = FRIED_interp.FRIED_interpolator(verbosity=False,
             folder=fried_folder)
 
-        self.model_time = 0. | units.Myr
+        self.model_time = begin_time
 
         self.star_particles = Particles()
         self.disks = []
@@ -140,7 +143,7 @@ class PPD_population:
             0.|units.MSun, 0.|units.MSun, 0.|units.AU, 0.|units.MSun/units.yr,
             0.|units.yr,False, False, False, False]
 
-        self.star_particles.add_calculated_attribute('total_mass',
+        self.star_particles.add_calculated_attribute('gravity_mass',
             lambda mass, disk_mass, accreted_mass: mass + disk_mass + accreted_mass)
 
 
@@ -154,13 +157,15 @@ class PPD_population:
                 disk.central_mass = self.star_particles[disk.host_star_id].mass
                 active_disks.append(disk)
 
-        disk_class.run_disks(self.codes, active_disks, end_time - self.model_time)
+        if len(active_disks) > 0:
+            disk_class.run_disks(self.codes, active_disks, 
+                end_time - self.model_time)
+            self.copy_from_disks()
 
-        self.star_particles.radius = 0.02 | units.pc
+        if len(self.star_particles) > 0:
+            self.star_particles.radius = 0.02 | units.pc
 
         self.model_time = end_time
-
-        self.copy_from_disks()
 
 
     def compute_epe_rate_from_stars (self, disk):
@@ -223,6 +228,8 @@ class PPD_population:
         F = self.grid_hydro.get_grid_flux_photoelectric(i,j,k,m,n)
 
         host_star.fuv_ambient_flux = F
+
+        print('Rad field:', F.value_in(G0), host_star.position.value_in(units.pc), flush=True)
 
         return self.interpolator.interp_amuse(disk.central_mass, F,
             disk.disk_gas_mass, disk.disk_radius)
@@ -380,8 +387,8 @@ class PPD_population:
         '''
 
         channel_from_self = self.star_particles.new_channel_to(particles, 
-            attributes=['total_mass', 'radius'], 
-            target_names=['total_mass', 'radius'])
+            attributes=['gravity_mass', 'radius'], 
+            target_names=['gravity_mass', 'radius'])
         channel_to_self = particles.new_channel_to(self.star_particles,
             attributes=['stellar_mass', 'x', 'y', 'z'],
             target_names=['mass', 'x', 'y', 'z'])
@@ -402,7 +409,7 @@ class PPD_population:
             attributes=['x', 'y', 'z', 'vx', 'vy', 'vz'],
             target_names=['x', 'y', 'z', 'vx', 'vy', 'vz'])
         channel_to_gravity = particles.new_channel_to(gravity.particles,
-            attributes=['total_mass', 'radius', 'x', 'y', 'z', 'vx', 'vy', 'vz'],
+            attributes=['gravity_mass', 'radius', 'x', 'y', 'z', 'vx', 'vy', 'vz'],
             target_names=['mass', 'radius', 'x', 'y', 'z', 'vx', 'vy', 'vz'])
 
         return channel_from_gravity, channel_to_gravity
@@ -432,22 +439,23 @@ class PPD_population:
 
     def write_out (self, filepath='./', overwrite=True):
 
-        write_set_to_file(self.star_particles, 
-            filepath+'/viscous_particles_i{a:05}.hdf5'.format(
-                a=self.output_counter), 'hdf5', timestamp=self.model_time, 
-            overwrite_file=overwrite)
+        if len(self.star_particles) > 0:
+            write_set_to_file(self.star_particles, 
+                filepath+'/viscous_particles_i{a:05}.hdf5'.format(
+                    a=self.output_counter), 'hdf5', timestamp=self.model_time, 
+                overwrite_file=overwrite)
+        else:
+            print ("[VISC] No particles to write!")
 
-        param_dump = open(filepath+'/viscous_params_i{a:05}.pickle'.format(
-            a=self.output_counter), 'wb')
-        pickle.dump(self._params, param_dump)
-        param_dump.close()
-
-        self.output_counter += 1
+        if not path.isfile(filepath+'/viscous_params.pickle'):
+            param_dump = open(filepath+'/viscous_params.pickle', 'wb')
+            pickle.dump(self._params, param_dump)
+            param_dump.close()
 
         N_disks = len(self.disked_stars)
 
         if N_disks == 0:
-            print ("No disks to write!")
+            print ("[VISC] No disks to write!")
             return
 
         N_grid = len(self.codes[0].grid.r)
@@ -465,20 +473,52 @@ class PPD_population:
             a=self.output_counter), 'hdf5', timestamp=self.model_time, 
             overwrite_file=overwrite)
 
+        self.output_counter += 1
+
 
 def restart_population (filepath, input_counter, number_of_workers=4,
         sph_hydro=None, grid_hydro=None):
 
-    grids = read_set_from_file(filepath+'viscous_grids_i{a:05}.hdf5'.format(
-        a=input_counter), 'hdf5')
+    if path.isfile(filepath+'/viscous_grids_i{a:05}.hdf5'.format(a=input_counter)):
+        grids = read_set_from_file(filepath+'/viscous_grids_i{a:05}.hdf5'.format(
+            a=input_counter), 'hdf5')
+    else:
+        grids = None
 
-    star_particles = read_set_from_file(
-        filepath+'viscous_particles_i{a:05}.hdf5'.format(a=input_counter), 'hdf5')
+    if path.isfile(filepath+'/viscous_particles_i{a:05}.hdf5'.format(
+            a=input_counter)):
+        star_particles = read_set_from_file(
+            filepath+'/viscous_particles_i{a:05}.hdf5'.format(a=input_counter),
+            'hdf5')
+    else:
+        star_particles = None
 
-    param_dump = open(filepath+'viscous_params_i{a:05}.pickle'.format(
+    param_dump = open(filepath+'/viscous_params.pickle'.format(
             a=input_counter), 'rb')
     params = pickle.load(param_dump)
     param_dump.close()
+
+
+
+    ppd_code = PPD_population(alpha=params['alpha'], mu=params['mu'], 
+            number_of_cells=params['n_cells'],
+            number_of_workers=number_of_workers, 
+            r_min=params['r_min'], r_max=params['r_max'],
+            fried_folder=params['fried_folder'], sph_hydro=sph_hydro, 
+            grid_hydro=grid_hydro)
+
+
+    if star_particles is None:
+        return ppd_code
+
+
+    ppd_code.model_time = star_particles.get_timestamp()
+
+
+    if grids is None:
+        ppd_code.add_star_particles(star_particles)
+        ppd_code.star_particles.initial_mass = star_particles.initial_mass
+        return ppd_code
 
 
     N_stars = len(star_particles)
@@ -486,17 +526,8 @@ def restart_population (filepath, input_counter, number_of_workers=4,
     N_cells = grids.shape[1]
 
 
-    ppd_code = PPD_population(alpha=params['alpha'], mu=params['mu'], 
-            number_of_cells=N_cells, number_of_workers=number_of_workers, 
-            r_min=params['r_min'], r_max=params['r_max'],
-            fried_folder=params['fried_folder'], sph_hydro=sph_hydro, 
-            grid_hydro=grid_hydro)
-
-    ppd_code.model_time = grids.get_timestamp()
-
-
     non_disk_attributes = ['key', 'disk_key', 'mass', 'position', 'velocity',
-        'radius', 'fuv_luminosity', 'fuv_ambient_flux']
+        'radius', 'fuv_luminosity', 'fuv_ambient_flux', 'initial_mass']
 
     ppd_code.star_particles = Particles(N_stars)
 
