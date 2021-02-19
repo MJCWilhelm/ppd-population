@@ -310,7 +310,7 @@ class Disk:
         N = len(self.grid.r)
         removed_mass = 0. | units.MSun
 
-        sigma_0 = self.viscous.get_parameter(2) | units.g/units.cm**2
+        sigma_0 = 1E-12 | units.g/units.cm**2
 
         for i in range(N):
             if self.grid[N-1-i].column_density > sigma_0:
