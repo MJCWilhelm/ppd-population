@@ -21,7 +21,8 @@ class Disk:
     def __init__(self, disk_radius, disk_gas_mass, central_mass, grid, alpha,
                        mu=2.33, Tm=None, delta=1e-2, rho_g=1.|units.g/units.cm**3, 
                        a_min=1e-8|units.m, internal_photoevap_flag=True,
-                       external_photoevap_flag=True, critical_radius=None):
+                       external_photoevap_flag=True, critical_radius=None,
+                       fried_folder=None):
 
         self.model_time = 0. | units.Myr
 
@@ -67,7 +68,15 @@ class Disk:
 
         self.disk_dust_mass = self.delta * self.disk_gas_mass
 
+        self.fuv_ambient_flux = 0. | G0
         self.outer_photoevap_rate = 0. | units.MSun/units.yr
+
+
+        if fried_folder is not None:
+            self.interpolator = FRIED_interp.FRIED_interpolator(verbosity=False,
+                folder=fried_folder)
+        else:
+            self.interpolator = None
 
 
     def evolve_disk_for(self, dt):
@@ -79,6 +88,14 @@ class Disk:
 
         dt: time step to evolve the disk for (scalar, units of time)
         '''
+
+        if self.external_photoevap_flag and self.interpolator is not None:
+            if self.fuv_ambient_flux <= 0. | G0:
+                self.external_photoevap_rate = 1e-10 | units.MSun/units.yr
+            else:
+                self.external_photoevap_rate = self.interpolator.interp_amuse(
+                    self.central_mass, self.fuv_ambient_flux, self.disk_gas_mass,
+                    self.disk_radius)
 
         # Adjust rotation curves to current central mass
         self.viscous.update_keplerian_grid(self.central_mass)
@@ -128,7 +145,7 @@ class Disk:
             self.viscous.evolve_model( self.viscous.model_time + dt/2. )
 
         except:
-            print ("Partial convergence failure at {a} Myr".format(
+            print ("[DISK] Partial convergence failure at {a} Myr".format(
                 a=self.model_time.value_in(units.Myr)), flush=True)
             # Failure is often due to excessive accretion, 
             # so switch to zero-torque and restart
@@ -144,14 +161,16 @@ class Disk:
 
             except:
                 # If still fails, give up hope
-                print ("Absolute convergence failure at {a} Myr".format(
+                print ("[DISK] Absolute convergence failure at {a} Myr".format(
                     a=self.model_time.value_in(units.Myr)), flush=True)
+                '''
                 plt.plot(self.viscous.grid.r.value_in(units.AU), self.viscous.grid.column_density.value_in(units.g/units.cm**2))
                 plt.xscale('log')
                 plt.yscale('log')
                 plt.axvline(self.disk_radius.value_in(units.AU))
                 print (self.central_mass.value_in(units.MSun), self.outer_photoevap_rate.value_in(units.MSun/units.yr), dt.value_in(units.kyr), flush=True)
                 plt.show()
+                '''
                 self.disk_convergence_failure = True
 
 
@@ -164,7 +183,7 @@ class Disk:
         # around a 0.08 MSun star; about 27 MEarth, and 0.08 MJupiter
         if self.disk_gas_mass < 0.00008 | units.MSun:
             self.disk_dispersed = True
-            print ('Disk dispersal at {a} Myr'.format(
+            print ('[DISK] Disk dispersal at {a} Myr'.format(
                 a=self.model_time.value_in(units.Myr)))
 
         # Keep track of mass accreted from the disk, as in the code this is the sum 
@@ -228,7 +247,7 @@ class Disk:
             self.viscous.evolve_model( self.viscous.model_time + dt/2. )
 
         except:
-            print ("Partial convergence failure at {a} Myr".format(
+            print ("[DISK] Partial convergence failure at {a} Myr".format(
                 a=self.model_time.value_in(units.Myr)), flush=True)
             self.viscous.parameters.inner_pressure_boundary_type = 3
             self.viscous.parameters.inner_boundary_function = False
@@ -241,14 +260,16 @@ class Disk:
                 self.viscous.evolve_model( self.viscous.model_time + dt/2. )
 
             except:
-                print ("Absolute convergence failure at {a} Myr".format(
+                print ("[DISK] Absolute convergence failure at {a} Myr".format(
                     a=self.model_time.value_in(units.Myr)), flush=True)
+                '''
                 plt.plot(self.viscous.grid.r.value_in(units.AU), self.viscous.grid.column_density.value_in(units.g/units.cm**2))
                 plt.xscale('log')
                 plt.yscale('log')
                 plt.axvline(self.disk_radius.value_in(units.AU))
                 print (self.central_mass.value_in(units.MSun), self.outer_photoevap_rate.value_in(units.MSun/units.yr), dt.value_in(units.kyr), flush=True)
                 plt.show()
+                '''
                 self.disk_convergence_failure = True
 
 
@@ -258,7 +279,7 @@ class Disk:
 
         if self.disk_gas_mass < 0.00008 | units.MSun:
             self.disk_dispersed = True
-            print ('Disk dispersal at {a} Myr'.format(
+            print ('[DISK] Disk dispersal at {a} Myr'.format(
                 a=self.model_time.value_in(units.Myr)))
 
         if self.disk_convergence_failure == False:
