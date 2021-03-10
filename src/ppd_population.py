@@ -17,7 +17,7 @@ G0 = 1.6e-3 * units.erg/units.s/units.cm**2
 kappa = 2e-21 / 1.008 * units.cm**2/units.amu
 
 
-def initial_disk_mass (stellar_mass):
+def initial_disk_mass (stellar_mass, max_frac=1.):
 
     try:
         N = len(stellar_mass)
@@ -30,21 +30,23 @@ def initial_disk_mass (stellar_mass):
         disk_mass = np.zeros(N) | units.MSun
 
         disk_mass[ mask ] = (0.24 | units.MSun) * \
-            (stellar_mass[ mask ].value_in(units.MSun))**0.73
+            (stellar_mass[ mask ].value_in(units.MSun) * max_frac**2)**0.73
 
         return disk_mass
 
     else:
         if stellar_mass < 1.9 | units.MSun:
-            return (0.24 | units.MSun) * (stellar_mass.value_in(units.MSun))**0.73
+            return (0.24 | units.MSun) * \
+                (stellar_mass.value_in(units.MSun) * max_frac**2)**0.73
         else:
             return 0. | units.MSun
 
 
-def initial_disk_radius (stellar_mass):
+def initial_disk_radius (stellar_mass, max_frac=1.):
 
     #return 400. | units.AU
-    return (200. | units.AU) * (stellar_mass.value_in(units.MSun))**0.45
+    return (200. | units.AU) * \
+        (stellar_mass.value_in(units.MSun) * max_frac**2)**0.45
 
 '''
 def FUV_luminosity_from_mass (M, folder='../data/'):
@@ -84,7 +86,7 @@ class PPD_population:
 
     def __init__ (self, alpha=1e-3, mu=2.33, number_of_cells=330,
             number_of_workers=4, r_min=0.01|units.AU, r_max=3000.|units.AU,
-            begin_time=0.|units.Myr, fried_folder=None, 
+            begin_time=0.|units.Myr, max_frac=1., fried_folder=None, 
             sph_hydro=None, grid_hydro=None):
         '''
         alpha: dimensionless viscosity parameter of PPDs (float)
@@ -108,6 +110,8 @@ class PPD_population:
             'n_cells': number_of_cells,
             'fried_folder': fried_folder,
         }
+
+        self.max_frac = max_frac
 
         self.output_counter = 0
 
@@ -157,12 +161,13 @@ class PPD_population:
         self.disk_attributes = ['accreted_mass', 'disk_gas_mass', 'disk_dust_mass',
             'disk_mass', 'truncation_mass_loss', 'disk_radius',
             'outer_photoevap_rate', 't_viscous', 'fuv_ambient_flux',
-            'disk_active', 'disk_dispersed', 'disk_convergence_failure']
+            'disk_active', 'disk_dispersed', 'disk_convergence_failure',
+            'ipe_mass_loss', 'epe_mass_loss']
 
         # alternatives for massive stars
         self.alternatives = [0.|units.MSun, 0.|units.MSun, 0.|units.MSun, 
             0.|units.MSun, 0.|units.MSun, 0.|units.AU, 0.|units.MSun/units.yr,
-            0.|units.yr, 0.|G0, False, False, False]
+            0.|units.yr, 0.|G0, False, False, False, 0.|units.MSun, 0.|units.MSun]
 
         self.star_particles.add_calculated_attribute('gravity_mass',
             lambda mass, disk_mass, accreted_mass: mass + disk_mass + accreted_mass)
@@ -424,8 +429,10 @@ class PPD_population:
 
             if mask_disked[i]:
                 new_disk = disk_class.Disk(
-                    initial_disk_radius(new_star_particles.mass[i]), 
-                    initial_disk_mass(new_star_particles.mass[i]),
+                    initial_disk_radius(new_star_particles.mass[i],
+                        max_frac=self.max_frac), 
+                    initial_disk_mass(new_star_particles.mass[i],
+                        max_frac=self.max_frac),
                     new_star_particles[i].mass, self.codes[0].grid,
                     self.codes[0].parameters.alpha,
                     fried_folder=self._params['fried_folder'])
@@ -569,7 +576,7 @@ class PPD_population:
 
 def restart_population (filepath, input_counter, alpha, mu, n_cells, r_min, r_max, 
         fried_folder=None, number_of_workers=4, sph_hydro=None, grid_hydro=None, 
-        label='', extra_attributes=[]):
+        label='', extra_attributes=[], max_frac=1.):
 
     if path.isfile(filepath+'/viscous_grids_{b}i{a:05}.hdf5'.format(
             a=input_counter, b=label)):
@@ -592,7 +599,7 @@ def restart_population (filepath, input_counter, alpha, mu, n_cells, r_min, r_ma
             number_of_workers=number_of_workers, 
             r_min=r_min, r_max=r_max,
             fried_folder=fried_folder, sph_hydro=sph_hydro, 
-            grid_hydro=grid_hydro)
+            grid_hydro=grid_hydro, max_frac=max_frac)
 
 
     if star_particles is None:
@@ -613,10 +620,11 @@ def restart_population (filepath, input_counter, alpha, mu, n_cells, r_min, r_ma
     N_cells = grids.shape[1]
 
 
-    non_disk_attributes = ['key', 'disk_key', 'mass', 'position', 'velocity',
+    non_disk_attributes = ['disk_key', 'mass', 'position', 'velocity',
         'radius', 'initial_mass', 'star_ejected']
 
-    ppd_code.star_particles.add_particles(Particles(N_stars))
+    ppd_code.star_particles.add_particles(
+        Particles(N_stars, keys=star_particles.key))
 
     for attr in non_disk_attributes:
         setattr(ppd_code.star_particles, attr, getattr(star_particles, attr))
@@ -642,6 +650,7 @@ def restart_population (filepath, input_counter, alpha, mu, n_cells, r_min, r_ma
             host_star = star_particles[i]
 
             disk.model_time = grids.get_timestamp()
+            disk.central_mass = host_star.mass
             disk.disk_dispersed = host_star.disk_dispersed
             disk.disk_convergence_failure = host_star.disk_convergence_failure
             disk.disk_dust_mass = host_star.disk_dust_mass
@@ -649,6 +658,8 @@ def restart_population (filepath, input_counter, alpha, mu, n_cells, r_min, r_ma
             disk.t_viscous = host_star.t_viscous
             disk.host_star_id = i
             disk.truncation_mass_loss = host_star.truncation_mass_loss
+            disk.ipe_mass_loss = host_star.ipe_mass_loss
+            disk.epe_mass_loss = host_star.epe_mass_loss
 
             disk.grid.column_density = grids[disk_counter].column_density
             disk.grid.pressure = grids[disk_counter].pressure

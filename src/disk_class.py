@@ -70,6 +70,8 @@ class Disk:
 
         self.fuv_ambient_flux = 0. | G0
         self.outer_photoevap_rate = 0. | units.MSun/units.yr
+        self.epe_mass_loss = 0. | units.MSun
+        self.ipe_mass_loss = 0. | units.MSun
 
 
         if fried_folder is not None:
@@ -91,11 +93,13 @@ class Disk:
 
         if self.external_photoevap_flag and self.interpolator is not None:
             if self.fuv_ambient_flux <= 0. | G0:
-                self.external_photoevap_rate = 1e-10 | units.MSun/units.yr
+                self.outer_photoevap_rate = 1e-10 | units.MSun/units.yr
             else:
-                self.external_photoevap_rate = self.interpolator.interp_amuse(
+                self.outer_photoevap_rate = self.interpolator.interp_amuse(
                     self.central_mass, self.fuv_ambient_flux, self.disk_gas_mass,
                     self.disk_radius)
+
+        temp = self.disk_gas_mass*1.
 
         # Adjust rotation curves to current central mass
         self.viscous.update_keplerian_grid(self.central_mass)
@@ -124,6 +128,11 @@ class Disk:
             ( self.internal_photoevap_flag * self.inner_photoevap_rate + \
               self.external_photoevap_flag * self.outer_photoevap_rate + \
               self.accretion_rate )
+
+        self.ipe_mass_loss += self.internal_photoevap_flag * \
+            self.inner_photoevap_rate * dt
+        self.epe_mass_loss += self.external_photoevap_flag * \
+            self.outer_photoevap_rate * dt
 
         # As codes are re-used, need to remember initial state
         initial_accreted_mass = -self.viscous.inner_boundary_mass_out
