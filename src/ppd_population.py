@@ -129,18 +129,18 @@ class PPD_population:
 
 
         if grid_hydro is not None:
-            self.compute_epe_rate = self.compute_epe_rate_from_radtrans
+            self.compute_rad_field = self.compute_rad_field_from_radtrans
             if sph_hydro is not None:
                 print ("Both grid and SPH is unphysical, please pick one.")
                 print ("Defaulting to grid.")
         else:
-            self.compute_epe_rate = self.compute_epe_rate_from_stars
+            self.compute_rad_field = self.compute_rad_field_from_stars
 
         self.sph_hydro = sph_hydro
         self.grid_hydro = grid_hydro
 
-        self.interpolator = FRIED_interp.FRIED_interpolator(verbosity=False,
-            folder=fried_folder)
+        #self.interpolator = FRIED_interp.FRIED_interpolator(verbosity=False,
+        #    folder=fried_folder)
 
         self.model_time = begin_time
 
@@ -171,7 +171,8 @@ class PPD_population:
 
         for disk in self.disks:
             if disk is not None and disk.disk_active:
-                disk.outer_photoevap_rate = self.compute_epe_rate(disk)
+                #disk.outer_photoevap_rate = self.compute_epe_rate(disk)
+                disk.fuv_ambient_flux = self.compute_rad_field(disk)
                 disk.central_mass = self.star_particles[disk.host_star_id].mass
                 active_disks.append(disk)
 
@@ -186,15 +187,64 @@ class PPD_population:
         self.model_time = end_time
 
 
+    def compute_rad_field_from_stars (self, disk):
+
+        host_star = self.star_particles[disk.host_star_id]
+
+        F = 0. | G0
+
+        if len(self.radiative_stars) == 0 or disk.disk_ejected:
+            #print ("No radiative stars")
+            host_star.fuv_ambient_flux = F
+            return F
+
+
+        for i in range(len(self.radiative_stars)):
+
+            if self.radiative_stars[i].fuv_luminosity > 0. | units.LSun:
+
+                R = (host_star.position - self.radiative_stars[i].position).length()
+
+                dF = self.radiative_stars[i].fuv_luminosity/(4.*np.pi*R*R)
+
+                if self.sph_hydro is not None:
+                    tau = optical_depth_between_points(self.sph_hydro,
+                        host_star.position, self.radiative_stars[i].position, 
+                        kappa)
+                    dF *= np.exp(-tau)
+
+                F += dF
+
+        return F
+
+
+    def compute_rad_field_from_radtrans (self, disk):
+
+        F = 0. | G0
+
+        if disk.disk_ejected:
+            return F
+
+        host_star = self.star_particles[disk.host_star_id]
+
+        i,j,k,m,n = self.grid_hydro.get_index_of_position(host_star.x, host_star.y,
+            host_star.z)
+
+        F = self.grid_hydro.get_grid_flux_photoelectric(i,j,k,m,n)
+
+        return F
+
+
+    '''
     def compute_epe_rate_from_stars (self, disk):
-        '''
+        ''
         Compute external photoevaporation rate for a disk from the FRIED grid
         Use radiation from bright stars (>1.9 MSun)
         Radiative transfer assumes geometric attenuation (1/r^2), with potential
         manual integration through density field (if sph_hydro is not None)
 
         disk: Disk object to compute EPE rate for
-        '''
+        ''
 
         host_star = self.star_particles[disk.host_star_id]
 
@@ -234,12 +284,12 @@ class PPD_population:
 
 
     def compute_epe_rate_from_radtrans (self, disk):
-        '''
+        ''
         Compute external photoevaporation rate for a disk from the FRIED grid
         Use radiation field from radiation-hydrodynamical grid code
 
         disk: Disk object to compute EPE rate for
-        '''
+        ''
 
         if disk.disk_ejected:
             host_star.fuv_ambient_flux = 0. | G0
@@ -255,13 +305,14 @@ class PPD_population:
 
         host_star.fuv_ambient_flux = F
 
-        print('Rad field:', F.value_in(G0), host_star.position.value_in(units.pc), i,j,k,m,n, flush=True)
+        #print('Rad field:', F.value_in(G0), host_star.position.value_in(units.pc), i,j,k,m,n, flush=True)
 
         if F <= 0.|G0:
             return 1e-10 | units.MSun/units.yr
 
         return self.interpolator.interp_amuse(disk.central_mass, F,
             disk.disk_gas_mass, disk.disk_radius)
+    '''
 
 
     def _periastron_distance (self, stars):

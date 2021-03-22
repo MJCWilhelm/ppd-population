@@ -70,6 +70,11 @@ class Disk:
         self.outer_photoevap_rate = 0. | units.MSun/units.yr
 
 
+
+        self.interpolator = FRIED_interp.FRIED_interpolator(verbosity=False,
+            folder='./')
+
+
     def evolve_disk_for(self, dt):
         '''
         Evolve a protoplanetary disk for a time step. Gas evolution is done through 
@@ -79,6 +84,15 @@ class Disk:
 
         dt: time step to evolve the disk for (scalar, units of time)
         '''
+
+        if self.external_photoevap_flag:
+            if self.fuv_ambient_flux <= 0. | G0:
+                self.external_photoevap_rate = 1e-10 | units.MSun/units.yr
+            else:
+                self.external_photoevap_rate = self.interpolator.interp_amuse(
+                    self.central_mass, self.fuv_ambient_flux, self.disk_gas_mass,
+                    self.disk_radius)
+
 
         # Adjust rotation curves to current central mass
         self.viscous.update_keplerian_grid(self.central_mass)
@@ -146,12 +160,12 @@ class Disk:
                 # If still fails, give up hope
                 print ("Absolute convergence failure at {a} Myr".format(
                     a=self.model_time.value_in(units.Myr)), flush=True)
-                plt.plot(self.viscous.grid.r.value_in(units.AU), self.viscous.grid.column_density.value_in(units.g/units.cm**2))
-                plt.xscale('log')
-                plt.yscale('log')
-                plt.axvline(self.disk_radius.value_in(units.AU))
-                print (self.central_mass.value_in(units.MSun), self.outer_photoevap_rate.value_in(units.MSun/units.yr), dt.value_in(units.kyr), flush=True)
-                plt.show()
+                #plt.plot(self.viscous.grid.r.value_in(units.AU), self.viscous.grid.column_density.value_in(units.g/units.cm**2))
+                #plt.xscale('log')
+                #plt.yscale('log')
+                #plt.axvline(self.disk_radius.value_in(units.AU))
+                #print (self.central_mass.value_in(units.MSun), self.outer_photoevap_rate.value_in(units.MSun/units.yr), dt.value_in(units.kyr), flush=True)
+                #plt.show()
                 self.disk_convergence_failure = True
 
 
@@ -243,12 +257,12 @@ class Disk:
             except:
                 print ("Absolute convergence failure at {a} Myr".format(
                     a=self.model_time.value_in(units.Myr)), flush=True)
-                plt.plot(self.viscous.grid.r.value_in(units.AU), self.viscous.grid.column_density.value_in(units.g/units.cm**2))
-                plt.xscale('log')
-                plt.yscale('log')
-                plt.axvline(self.disk_radius.value_in(units.AU))
-                print (self.central_mass.value_in(units.MSun), self.outer_photoevap_rate.value_in(units.MSun/units.yr), dt.value_in(units.kyr), flush=True)
-                plt.show()
+                #plt.plot(self.viscous.grid.r.value_in(units.AU), self.viscous.grid.column_density.value_in(units.g/units.cm**2))
+                #plt.xscale('log')
+                #plt.yscale('log')
+                #plt.axvline(self.disk_radius.value_in(units.AU))
+                #print (self.central_mass.value_in(units.MSun), self.outer_photoevap_rate.value_in(units.MSun/units.yr), dt.value_in(units.kyr), flush=True)
+                #plt.show()
                 self.disk_convergence_failure = True
 
 
