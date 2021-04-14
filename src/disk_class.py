@@ -184,8 +184,8 @@ class Disk:
         # Copy disk data to class 
         ch_visc_to_fram.copy()
 
-        # Lower limit of disk masses is 1% of the mass of a 10% mass ratio disk 
-        # around a 0.08 MSun star; about 27 MEarth, and 0.08 MJupiter
+        # Lower limit of disk masses is 0.1% of the mass of a 10% mass ratio disk 
+        # around a 0.08 MSun star; about 2.7 MEarth, and 0.008 MJupiter
         if self.disk_gas_mass < 0.000008 | units.MSun:
             self.disk_dispersed = True
             print ('[DISK] Disk dispersal at {a} Myr'.format(
@@ -194,8 +194,15 @@ class Disk:
         # Keep track of mass accreted from the disk, as in the code this is the sum 
         # of all past mass accretions (including from other disks)
         if self.disk_convergence_failure == False:
+            accreted_dust = self.delta * (
+                -self.viscous.inner_boundary_mass_out - initial_accreted_mass )
+            if self.disk_dust_mass < accreted_dust:
+                accreted_dust = self.disk_dust_mass
+                self.disk_dust_mass = 0. | units.MSun
+
             self.accreted_mass += -self.viscous.inner_boundary_mass_out - \
                 initial_accreted_mass
+            self.accreted_mass += accreted_dust
             initial_accreted_mass = -self.viscous.inner_boundary_mass_out
 
         # Flag to decide whether or not to evolve the disk
@@ -288,8 +295,15 @@ class Disk:
                 a=self.model_time.value_in(units.Myr)))
 
         if self.disk_convergence_failure == False:
-            self.accreted_mass += \
-                -self.viscous.inner_boundary_mass_out - initial_accreted_mass
+            accreted_dust = self.delta * (
+                -self.viscous.inner_boundary_mass_out - initial_accreted_mass )
+            if self.disk_dust_mass < accreted_dust:
+                accreted_dust = self.disk_dust_mass
+                self.disk_dust_mass = 0. | units.MSun
+
+            self.accreted_mass += -self.viscous.inner_boundary_mass_out - \
+                initial_accreted_mass
+            self.accreted_mass += accreted_dust
 
         #self.disk_active = (not self.disk_dispersed)*(not self.disk_convergence_failure)
 
@@ -443,6 +457,14 @@ class Disk:
     @property
     def disk_active(self):
         return (not self.disk_dispersed)*(not self.disk_convergence_failure)
+
+    @property
+    def age(self):
+        return self.model_time
+
+    @age.setter
+    def age(self, age):
+        self.model_time = age
 
 
 def setup_disks_and_codes(disk_radii, disk_masses, stellar_masses,

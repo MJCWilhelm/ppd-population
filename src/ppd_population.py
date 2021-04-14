@@ -160,14 +160,15 @@ class PPD_population:
         # disk attributes to save with particles
         self.disk_attributes = ['accreted_mass', 'disk_gas_mass', 'disk_dust_mass',
             'disk_mass', 'truncation_mass_loss', 'disk_radius',
-            'outer_photoevap_rate', 't_viscous', 'fuv_ambient_flux',
+            'outer_photoevap_rate', 't_viscous', 'age', 'fuv_ambient_flux',
             'disk_active', 'disk_dispersed', 'disk_convergence_failure',
             'ipe_mass_loss', 'epe_mass_loss']
 
         # alternatives for massive stars
         self.alternatives = [0.|units.MSun, 0.|units.MSun, 0.|units.MSun, 
             0.|units.MSun, 0.|units.MSun, 0.|units.AU, 0.|units.MSun/units.yr,
-            0.|units.yr, 0.|G0, False, False, False, 0.|units.MSun, 0.|units.MSun]
+            0.|units.yr, 0.|units.yr, 0.|G0, False, False, False, 
+            0.|units.MSun, 0.|units.MSun]
 
         self.star_particles.add_calculated_attribute('gravity_mass',
             lambda mass, disk_mass, accreted_mass: mass + disk_mass + accreted_mass)
@@ -378,7 +379,13 @@ class PPD_population:
 
                     mask = disk.grid.r > r_new
 
-                    disk.truncation_mass_loss += (disk.grid[mask].area * (disk.grid[mask].column_density - (1e-12 | units.g/units.cm**2))).sum()
+
+                    truncated_mass = (disk.grid[mask].area * (disk.grid[mask].column_density - (1e-12 | units.g/units.cm**2))).sum()
+                    disk.truncation_mass_loss += truncated_mass
+                    if disk.delta*truncated_mass > disk.disk_dust_mass:
+                        disk.disk_dust_mass = 0. | units.MSun
+                    else:
+                        disk.disk_dust_mass -= disk.delta*truncated_mass
 
                     disk.grid[mask].column_density = 1e-12 | units.g/units.cm**2
 
@@ -656,6 +663,7 @@ def restart_population (filepath, input_counter, alpha, mu, n_cells, r_min, r_ma
             disk.disk_dust_mass = host_star.disk_dust_mass
             disk.accreted_mass = host_star.accreted_mass
             disk.t_viscous = host_star.t_viscous
+            disk.age = host_star.age
             disk.host_star_id = i
             disk.truncation_mass_loss = host_star.truncation_mass_loss
             disk.ipe_mass_loss = host_star.ipe_mass_loss
