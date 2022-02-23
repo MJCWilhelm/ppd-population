@@ -3,6 +3,7 @@ import matplotlib.pyplot as plt
 
 import pickle
 from os import path
+import time
 
 from amuse.units import units, constants
 from amuse.datamodel import Particles, new_regular_grid
@@ -29,15 +30,13 @@ def initial_disk_mass (stellar_mass, max_frac=1.):
 
         disk_mass = np.zeros(N) | units.MSun
 
-        disk_mass[ mask ] = (0.24 | units.MSun) * \
-            (stellar_mass[ mask ].value_in(units.MSun) * max_frac**2)**0.73
+        disk_mass[ mask ] = 0.1 * stellar_mass[ mask ]
 
         return disk_mass
 
     else:
         if stellar_mass < 1.9 | units.MSun:
-            return (0.24 | units.MSun) * \
-                (stellar_mass.value_in(units.MSun) * max_frac**2)**0.73
+            return 0.1 * stellar_mass
         else:
             return 0. | units.MSun
 
@@ -45,8 +44,8 @@ def initial_disk_mass (stellar_mass, max_frac=1.):
 def initial_disk_radius (stellar_mass, max_frac=1.):
 
     #return 400. | units.AU
-    return (200. | units.AU) * \
-        (stellar_mass.value_in(units.MSun) * max_frac**2)**0.45
+    return (30. | units.AU) * \
+        (stellar_mass.value_in(units.MSun) * max_frac**2)**0.5
 
 '''
 def FUV_luminosity_from_mass (M, folder='../data/'):
@@ -153,6 +152,8 @@ class PPD_population:
         self.model_time = begin_time
 
         self.star_particles = Particles()
+        #self._int_radiative_stars = Particles()
+        #self._int_channel = self.radiative_stars.new_channel_to(self._int_radiative_stars)
         self.disks = []
 
         self.collision_detector = None
@@ -178,12 +179,16 @@ class PPD_population:
 
         active_disks = []
 
+        start = time.time()
+        #self._int_channel.copy()
         for disk in self.disks:
             if disk is not None and disk.disk_active:
                 #disk.outer_photoevap_rate = self.compute_epe_rate(disk)
                 disk.fuv_ambient_flux = self.compute_rad_field(disk)
                 disk.central_mass = self.star_particles[disk.host_star_id].mass
                 active_disks.append(disk)
+        end = time.time()
+        print ("[PPD] Radiation fields in {a} s".format(a=end-start), flush=True)
 
         print ("[PPD] Running {a}/{b} disks".format(a=len(active_disks),
             b=len(self.disked_stars)), flush=True)
@@ -203,29 +208,41 @@ class PPD_population:
 
         host_star = self.star_particles[disk.host_star_id]
 
-        F = 0. | G0
-
         if len(self.radiative_stars) == 0 or \
                 self.star_particles[disk.host_star_id].star_ejected:
-            return F
+            return 0. | G0
 
+        Rmin = 5e17 * 0.25 * (disk.disk_radius.value_in(units.cm)/1e14)**0.5 | units.cm
+        R = (host_star.position - self.radiative_stars.position).lengths()
 
-        for i in range(len(self.radiative_stars)):
+        if R.min() < Rmin:
+            disk.EUV_photoevap = True
 
-            if self.radiative_stars[i].fuv_luminosity > 0. | units.LSun and \
-                    not self.radiative_stars[i].star_ejected:
+        F = (self.radiative_stars.fuv_luminosity/(4.*np.pi*R*R)).sum()
 
-                R= (host_star.position - self.radiative_stars[i].position).length()
+        '''
+        for i in range(len(self._int_radiative_stars)):
 
-                dF = self.radiative_stars[i].fuv_luminosity/(4.*np.pi*R*R)
+            if self._int_radiative_stars[i].fuv_luminosity > 0. | units.LSun and \
+                    not self._int_radiative_stars[i].star_ejected:
+
+                Rmin = 5e17 * 0.25 * np.sqrt(disk.disk_radius.value_in(units.cm)/1e14) | units.cm
+
+                R = (host_star.position - self._int_radiative_stars[i].position).length()
+
+                if R < Rmin:
+                    disk.EUV_photoevap = True
+
+                dF = self._int_radiative_stars[i].fuv_luminosity/(4.*np.pi*R*R)
 
                 if self.sph_hydro is not None:
                     tau = optical_depth_between_points(self.sph_hydro,
-                        host_star.position, self.radiative_stars[i].position, 
+                        host_star.position, self._int_radiative_stars[i].position, 
                         kappa)
                     dF *= np.exp(-tau)
 
                 F += dF
+        '''
 
         return F
 
@@ -460,6 +477,7 @@ class PPD_population:
                 self.star_particles[start+i].disk_key = -1
 
         self.copy_from_disks()
+        #self.radiative_stars.synchronize_to(self._int_radiative_stars)
 
 
     def copy_from_disks (self):
@@ -610,6 +628,7 @@ def restart_population (filepath, input_counter, alpha, mu, n_cells, r_min, r_ma
 
 
     if star_particles is None:
+        print ("[PPD] No particles, just initialized", flush=True)
         return ppd_code
 
 
@@ -619,6 +638,7 @@ def restart_population (filepath, input_counter, alpha, mu, n_cells, r_min, r_ma
     if grids is None:
         ppd_code.add_star_particles(star_particles)
         ppd_code.star_particles.initial_mass = star_particles.initial_mass
+        print ("[PPD] No grids, reinitialized disks", flush=True)
         return ppd_code
 
 
@@ -679,5 +699,7 @@ def restart_population (filepath, input_counter, alpha, mu, n_cells, r_min, r_ma
     ppd_code.copy_from_disks()
 
     ppd_code.output_counter = input_counter + 1
+
+    print ("[PPD] Finished reloading disks", flush=True)
 
     return ppd_code

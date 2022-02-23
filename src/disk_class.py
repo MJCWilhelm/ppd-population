@@ -22,7 +22,7 @@ class Disk:
                        mu=2.33, Tm=None, delta=1e-2, rho_g=1.|units.g/units.cm**3, 
                        a_min=1e-8|units.m, internal_photoevap_flag=True,
                        external_photoevap_flag=True, critical_radius=None,
-                       fried_folder=None):
+                       fried_folder=None, use_EUV_photoevap=True):
 
         self.model_time = 0. | units.Myr
 
@@ -73,6 +73,8 @@ class Disk:
         self.epe_mass_loss = 0. | units.MSun
         self.ipe_mass_loss = 0. | units.MSun
 
+        self.EUV_photoevap = False
+        self.use_EUV_photoevap = use_EUV_photoevap
 
         if fried_folder is not None:
             self.interpolator = FRIED_interp.FRIED_interpolator(verbosity=False,
@@ -98,6 +100,10 @@ class Disk:
                 self.outer_photoevap_rate = self.interpolator.interp_amuse(
                     self.central_mass, self.fuv_ambient_flux, self.disk_gas_mass,
                     self.disk_radius)
+            if self.use_EUV_photoevap and self.EUV_photoevap:
+                self.outer_photoevap_rate += 2e-9 * (1.+1.5)**2/1.5*3. * \
+                    (self.disk_radius.value_in(units.cm)/1e14) | units.MSun/units.yr
+                self.EUV_photoevap = False
 
         # Adjust rotation curves to current central mass
         self.viscous.update_keplerian_grid(self.central_mass)

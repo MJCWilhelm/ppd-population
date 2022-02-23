@@ -5,6 +5,8 @@ import matplotlib.pyplot as plt
 from amuse.io import read_set_from_file
 from amuse.units import units
 
+import time
+
 
 def read_sets (indices, label='', filepath='./'):
 
@@ -18,6 +20,9 @@ def read_sets (indices, label='', filepath='./'):
 
         for j in range(len(particles_temp)):
 
+            if particles_temp[j].disk_dispersed:
+                continue
+
             key = particles_temp[j].key
 
             if key not in particles.keys():
@@ -27,12 +32,14 @@ def read_sets (indices, label='', filepath='./'):
                 particles[key]['time'] = [] | units.Myr
                 particles[key]['truncation_mass_loss'] = [] | units.MSun
                 particles[key]['stellar_mass'] = [] | units.MSun
+                particles[key]['disk_dispersed'] = []
 
             particles[key]['disk_radius'].append(particles_temp[j].disk_radius)
             particles[key]['disk_gas_mass'].append(particles_temp[j].disk_gas_mass)
             particles[key]['time'].append(particles_temp.get_timestamp())
             particles[key]['truncation_mass_loss'].append(particles_temp[j].truncation_mass_loss)
             particles[key]['stellar_mass'].append(particles_temp[j].mass)
+            particles[key]['disk_dispersed'].append(particles_temp[j].disk_dispersed)
 
     return particles
 
@@ -40,10 +47,14 @@ def read_sets (indices, label='', filepath='./'):
 
 if __name__ == '__main__':
 
-    filepath = '/home/martijn/scripts/torch_test4/data/'
+    #filepath = '/home/martijn/scripts/torch_test4/data/'
+    filepath = '/data2/wilhelm/sim_archive/gmc_star_formation/ColGMC_concha2021_test2/'
 
-    disks = read_sets(np.arange(152,261), label='plt_', 
+    start = time.time()
+    disks = read_sets(np.arange(70,382), 
         filepath=filepath)
+    end = time.time()
+    print (end-start, 's', flush=True)
 
     N = len(disks)
 
@@ -61,9 +72,14 @@ if __name__ == '__main__':
     for key in disks:
         plt.plot(disks[key]['time'].value_in(units.Myr), 
             disks[key]['disk_gas_mass'].value_in(units.MSun), c='k', alpha=N**-0.5)
-        Mtrunc = disks[key]['truncation_mass_loss'][-1].value_in(units.MSun)
-        if Mtrunc > 1e-13:
-            print (Mtrunc, 'MSun', flush=True)
+        disk_gas_mass = disks[key]['disk_gas_mass'][ disks[key]['disk_dispersed'] ]
+
+        N_zero = np.sum( (disk_gas_mass[:-1] - disk_gas_mass[1:]).value_in(units.MSun) > 0.)
+        if N_zero > 0:
+            print (N_zero, flush=True)
+        #Mtrunc = disks[key]['truncation_mass_loss'][-1].value_in(units.MSun)
+        #if Mtrunc > 1e-13:
+        #    print (Mtrunc, 'MSun', flush=True)
 
     plt.yscale('log')
 
