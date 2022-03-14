@@ -663,7 +663,8 @@ def restart_population (filepath, input_counter, alpha, mu, n_cells, r_min, r_ma
             disk.disk_dust_mass = host_star.disk_dust_mass
             disk.accreted_mass = host_star.accreted_mass
             disk.t_viscous = host_star.t_viscous
-            disk.age = host_star.age
+            if hasattr(host_star, 'age'):
+                disk.age = host_star.age
             disk.host_star_id = i
             disk.truncation_mass_loss = host_star.truncation_mass_loss
             disk.ipe_mass_loss = host_star.ipe_mass_loss
