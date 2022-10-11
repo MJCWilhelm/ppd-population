@@ -84,7 +84,7 @@ class PPD_population:
 
     def __init__ (self, alpha=1e-3, mu=2.33, number_of_cells=330,
             number_of_workers=4, r_min=0.01|units.AU, r_max=3000.|units.AU,
-            begin_time=0.|units.Myr, fried_folder=None, 
+            begin_time=0.|units.Myr, fried_folder='../data/', 
             sph_hydro=None, grid_hydro=None):
         '''
         alpha: dimensionless viscosity parameter of PPDs (float)

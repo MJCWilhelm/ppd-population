@@ -1,7 +1,31 @@
 import numpy as np
 import matplotlib.pyplot as plt
 
-from ppd_population import PPD_population, FUV_luminosity_from_mass
+from ppd_population import PPD_population
+
+
+def FUV_luminosity_from_mass (M, folder='../data/'):
+    '''
+    Compute the FUV-luminosity from stellar mass according to the power
+    law fit derived from the UVBLUE spectra (at z=0.0122, 
+    Rodriguez-Merino 2005). The file 'ML_fit.txt' is needed in the
+    same folder. Masses are put in in solar masses, and the 
+    luminosities are put out in solar luminosities.
+    '''
+
+    from amuse.units import units
+
+    A, B, mass = np.loadtxt(folder+'/ML_fit.txt', unpack=True)
+
+    m = M.value_in(units.MSun)
+
+    if m < mass[0]:
+        return 10.**(A[0]*np.log10(m) + B[0]) | units.LSun
+    elif m > mass[-1]:
+        return 10.**(A[-1]*np.log10(mass[-1]) + B[-1]) | units.LSun
+    else:
+        i = np.argmax(mass > m)-1
+        return 10.**(A[i]*np.log10(m) + B[i]) | units.LSun
 
 
 def test_truncation ():
@@ -406,17 +430,32 @@ def test_restartibility (N=10):
     ppds2.add_star_particles(stars)
 
 
-    ppds1.evolve_model(1.|units.kyr)
+    for i in range(10):
+        ppds1.evolve_model((i+1)|units.kyr)
 
-    ppds2.evolve_model(1.|units.kyr)
+        ppds2.evolve_model((i+1)|units.kyr)
 
-    ppds2.write_out()
+    print (ppds1.model_time.value_in(units.Myr))
+    for code in ppds1.codes:
+        print (code.model_time.value_in(units.Myr))
+    print (ppds2.model_time.value_in(units.Myr))
+    for code in ppds2.codes:
+        print (code.model_time.value_in(units.Myr))
 
-    ppds3 = restart_population('./', 0)
+    #ppds2.write_out()
+    ppds2.write_particles()
+    ppds2.write_grids()
 
-    ppds1.evolve_model(2.|units.kyr)
+    ppds3 = restart_population('./', 0, ppds2._params['alpha'],
+        ppds2._params['mu'], ppds2._params['n_cells'], ppds2._params['r_min'],
+        ppds2._params['r_max'], extra_attributes=['fuv_luminosity'],
+        number_of_workers=1)
 
-    ppds3.evolve_model(2.|units.kyr)
+
+    for i in range(10,20):
+        ppds1.evolve_model((i+1)|units.kyr)
+
+        ppds3.evolve_model((i+1)|units.kyr)
 
 
     fig = plt.figure()
@@ -459,7 +498,8 @@ def test_restartibility (N=10):
 
             ax4.plot(ppds1.disks[i].grid.r.value_in(units.AU), ppds1.disks[i].grid.pressure.value_in(units.g/units.s**2))
 
-    print ((ppds1.star_particles.disk_dust_mass - ppds3.star_particles.disk_dust_mass).value_in(units.MSun))
+    print ((ppds1.star_particles.disk_gas_mass - ppds3.star_particles.disk_gas_mass)/ppds1.star_particles.disk_gas_mass)
+    print ((ppds1.star_particles.accreted_mass - ppds3.star_particles.accreted_mass)/ppds1.star_particles.accreted_mass)
     
 
 
