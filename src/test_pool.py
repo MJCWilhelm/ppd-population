@@ -505,7 +505,7 @@ def test_restartibility (N=10):
 
 if __name__ == '__main__':
 
-    #test_truncation()
+    test_truncation()
 
     #test_radiation_field()
 
@@ -514,6 +514,6 @@ if __name__ == '__main__':
     #for dm in np.logspace(-3, -1):
     #    test_single_truncation(dm)
 
-    test_restartibility()
+    #test_restartibility()
 
     plt.show()
