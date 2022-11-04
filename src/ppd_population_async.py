@@ -2,6 +2,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 
 import pickle
+import time
 from os import path
 
 from amuse.community.vader.interface import Vader
@@ -17,11 +18,35 @@ from ppd_population import G0, initial_disk_mass, initial_disk_radius
 
 class PPDPopulationAsync:
 
-    def __init__ (self, alpha=1e-3, mu=2.33, number_of_cells=330,
-            r_min=0.01|units.AU, r_max=3000.|units.AU,
+    def __init__ (self, alpha=1e-3, mu=2.33, number_of_cells=330, 
+            number_of_workers=4, r_min=0.01|units.AU, r_max=3000.|units.AU,
             begin_time=0.|units.Myr, max_frac=1., eta=1., fried_folder='../data/', 
             sph_hydro=None, grid_hydro=None, dust_model='Haworth2018',
             vader_mode='pedisk_nataccr'):
+
+        self.codes = [ Vader(mode=vader_mode, redirection='none') \
+            for _ in range(number_of_workers) ]
+
+        for i in range(number_of_workers):
+
+            self.codes[i].initialize_code()
+            self.codes[i].initialize_keplerian_grid(number_of_cells, False,
+                r_min, r_max, 1. | units.MSun)
+
+            self.codes[i].parameters.alpha = alpha
+            self.codes[i].parameters.post_timestep_function = True
+            self.codes[i].parameters.maximum_tolerated_change = 1E99
+            self.codes[i].parameters.number_of_user_parameters = 7
+            self.codes[i].parameters.inner_pressure_boundary_torque = \
+                0. | units.g*units.cm**2./units.s**2.
+            self.codes[i].parameters.inner_pressure_boundary_type = 1
+            self.codes[i].parameters.inner_boundary_function = True
+
+            # Outer density in g/cm^2
+            self.codes[i].set_parameter(2, 1E-12)
+            # Mean particle mass in g
+            self.codes[i].set_parameter(4,
+                (mu*1.008*constants.u).value_in(units.g))
 
         self._params = {
             'alpha': alpha,
@@ -154,12 +179,14 @@ class PPDPopulationAsync:
         disk_ids = np.arange(len(self.disks))[mask_active]
 
         epe_rate = self.compute_epe_rate(disk_ids)
+        for i in range(len(disk_ids)):
+            self.disks[disk_ids[i]].outer_photoevap_rate = epe_rate[i]
+            self.disks[disk_ids[i]].central_mass = \
+                self.star_particles[disk_ids[i]].mass
 
-        for disk_id in disk_ids:
-            self.disks[disk_id].central_mass = self.star_particles[disk_id].mass
-
-        self.evolve_model_adaptive(disk_ids, end_time - self.model_time,
-            epe_rate)
+        start = time.time()
+        self.evolve_model_adaptive(disk_ids, end_time - self.model_time)
+        end = time.time()
 
         self.copy_from_disks()
         self.star_particles.radius = 0.02 | units.pc
@@ -167,16 +194,15 @@ class PPDPopulationAsync:
         self.model_time = end_time
 
 
-    def evolve_model_adaptive (self, disk_ids, dt, epe_rate):
-
-        print ("[PPDA] Evolving {a}/{b} disks for {c} kyr".format(
-            a=len(disk_ids), b=len(self.disked_stars), c=dt.value_in(units.kyr)))
+    def evolve_model_adaptive (self, disk_ids, dt):
 
         if len(disk_ids) == 0:
             return
 
         disk_mass = [ self.disks[disk_id].disk_gas_mass.value_in(units.MSun) \
             for disk_id in disk_ids ] | units.MSun
+        epe_rate = [ self.disks[disk_id].outer_photoevap_rate.value_in(
+            units.MSun/units.yr) for disk_id in disk_ids ] | units.MSun/units.yr
 
         tau = self.eta * disk_mass / epe_rate
 
@@ -184,113 +210,136 @@ class PPDPopulationAsync:
 
         if np.sum(mask_subcycle):
             # Subcycle rapidly evaporating disks
-            self.evolve_model_adaptive(disk_ids[ mask_subcycle ], dt/2., 
-                epe_rate[ mask_subcycle ])
+            self.evolve_model_adaptive(disk_ids[ mask_subcycle ], dt/2.)
 
+            # For disks that are still active, recompute EPE rate
             mask_still_active = [ self.disks[disk_id].disk_active == True \
                 for disk_id in disk_ids[ mask_subcycle ] ]
-            subcycle_epe_rate = self.compute_epe_rate(
-                disk_ids[ mask_subcycle ][ mask_still_active ])
-            self.evolve_model_adaptive(
-                disk_ids[ mask_subcycle ][ mask_still_active ], dt/2., 
-                subcycle_epe_rate)
+            still_active_disk_ids = disk_ids[ mask_subcycle ][ mask_still_active ]
+
+            subcycle_epe_rate = self.compute_epe_rate(still_active_disk_ids)
+            for i in range(len(still_active_disk_ids)):
+                self.disks[still_active_disk_ids[i]].outer_photoevap_rate = \
+                    subcycle_epe_rate[i]
+            self.evolve_model_adaptive(still_active_disk_ids, dt/2.)
+
+        # Evolve disks that are not subcycled, and are still active
+        # We select for active disks in the top call, but we can be in a subcycle!
+        mask_active = (mask_subcycle == False)*np.array([
+            self.disks[disk_id].disk_active == True for disk_id in disk_ids])
 
 
-        for i in range(len(disk_ids)):
-          if not mask_subcycle[i]:
+        if self._params['vader_mode'] == 'pedisk':
+            # Compatibility with old model, should be bitwise equal to that!
+            self.evolve_disks(disk_ids[ mask_active ], dt/2.)
 
-            disk = self.disks[disk_ids[i]]
+            self.evolve_Haworth2018_dust_model(disk_ids[ mask_active ], dt)
 
-            disk.outer_photoevap_rate = epe_rate[i]
-            # Internal photoevaporation rate        
-            disk.viscous.set_parameter(0, 
-                disk.internal_photoevap_flag * \
-                disk.inner_photoevap_rate.value_in(units.g/units.s))
-            # External photoevaporation rate
-            disk.viscous.set_parameter(1, 
-                disk.external_photoevap_flag * \
-                disk.outer_photoevap_rate.value_in(units.g/units.s))
+            self.evolve_disks(disk_ids[ mask_active ], dt/2., update=False)
 
-            disk.ipe_mass_loss += disk.internal_photoevap_flag * \
-                disk.inner_photoevap_rate * dt
-            disk.epe_mass_loss += disk.external_photoevap_flag * \
-                disk.outer_photoevap_rate * dt
+        else:
+            # Leap-frog like operator splitting for Haworth dust model
+            # Makes more sense than leap-frogging VADER
+            if self.dust_model == 'Haworth2018':
+                self.evolve_Haworth2018_dust_model(disk_ids[ mask_active ], dt/2.)
 
-            disk.viscous.update_keplerian_grid(
-                disk.central_mass)
-            disk.channel_to_code.copy()
-
-
-        pool = []; in_pool = [];
-        for i in range(len(disk_ids)):
-          disk = self.disks[disk_ids[i]]
-          if not mask_subcycle[i] and disk.disk_active:
-            pool.append( disk.viscous.evolve_model.asynchronous(
-                disk.viscous.model_time + dt/2.) )
-            in_pool.append(i)
-
-        for i in range(len(pool)):
-            try:
-                pool[i].wait()
-            except:
-                print ("[PPDA] Absolute convergence failure at {a} Myr".format(
-                    a=self.disks[disk_ids[in_pool[i]]].viscous.model_time.value_in(
-                        units.Myr)), flush=True)
-                self.disks[disk_ids[in_pool[i]]].disk_convergence_failure = True
-
-
-        for i in range(len(disk_ids)):
-          disk = self.disks[disk_ids[i]]
-          if not mask_subcycle[i] and disk.disk_active:
-            disk.model_time += dt/2.
-            disk.channel_from_code.copy()
-
-            if disk.disk_gas_mass < 0.00008 | units.MSun:
-                disk.disk_dispersed = True
-                print ('[PPDA] Disk dispersal at {a} Myr'.format(
-                    a=disk.model_time.value_in(units.Myr)))
-
-            disk.accreted_mass = -disk.viscous.inner_boundary_mass_out
-
+            self.evolve_disks(disk_ids[ mask_active ], dt)
 
             if self.dust_model == 'Haworth2018':
-                self.evolve_Haworth2018_dust_model(disk, dt)
+                self.evolve_Haworth2018_dust_model(disk_ids[ mask_active ], dt/2.)
 
 
-        pool = []; in_pool = [];
-        for i in range(len(disk_ids)):
-          disk = self.disks[disk_ids[i]]
-          if not mask_subcycle[i] and disk.disk_active:
-            pool.append( disk.viscous.evolve_model.asynchronous(
-                disk.viscous.model_time + dt/2.) )
-            in_pool.append(i)
+    def evolve_disks (self, disk_ids, dt, update=True):
 
-        for i in range(len(pool)):
-            try:
-                pool[i].wait()
-            except:
-                print ("[PPDA] Absolute convergence failure at {a} Myr".format(
-                    a=self.disks[disk_ids[in_pool[i]]].viscous.model_time.value_in(
-                        units.Myr)), flush=True)
-                self.disks[disk_ids[in_pool[i]]].disk_convergence_failure = True
+        print ("[PPDA] Evolving {a}/{b} disks for {c} kyr".format(
+            a=len(disk_ids), b=len(self.disked_stars), c=dt.value_in(units.kyr)))
 
-        for i in range(len(disk_ids)):
-          disk = self.disks[disk_ids[i]]
-          if not mask_subcycle[i] and disk.disk_active:
-            disk.model_time += dt/2.
-            disk.channel_from_code.copy()
+        active_disk_ids = list(disk_ids)
 
-            if disk.disk_gas_mass < 0.00008 | units.MSun:
-                disk.disk_dispersed = True
-                print ('[PPDA] Disk dispersal at {a} Myr'.format(
-                    a=disk.model_time.value_in(units.Myr)))
+        # Treat disk ids to evolve as a stack
+        while len(active_disk_ids):
+            evolve_disk_ids, accreted_mass_before = [], []
+            channels_to_codes, channels_from_codes = [], []
+            counter = 0
+            # Pop off stack a number of disks equal to the number of codes, or the
+            # remaining disks if smaller
+            while len(evolve_disk_ids) < len(self.codes) and len(active_disk_ids):
+                evolve_disk_ids.append(active_disk_ids.pop(0))
+                channels_from_codes.append(self.codes[counter].grid.new_channel_to(
+                    self.disks[evolve_disk_ids[counter]].grid))
+                channels_to_codes.append(
+                    self.disks[evolve_disk_ids[counter]].grid.new_channel_to(
+                        self.codes[counter].grid))
+                accreted_mass_before.append(
+                    -self.codes[counter].inner_boundary_mass_out)
+                counter += 1
 
-            disk.accreted_mass = -disk.viscous.inner_boundary_mass_out
+            for i in range(len(evolve_disk_ids)):
+                disk = self.disks[evolve_disk_ids[i]]
+
+                if update:
+                    self.codes[i].update_keplerian_grid(disk.central_mass)
+
+                    self.codes[i].set_parameter(0, disk.internal_photoevap_flag * \
+                        disk.inner_photoevap_rate.value_in(units.g/units.s))
+                    self.codes[i].set_parameter(1, disk.external_photoevap_flag * \
+                        disk.outer_photoevap_rate.value_in(units.g/units.s))
+                    self.codes[i].set_parameter(3, disk.Tm.value_in(units.K))
+                    if self._params['vader_mode'] == 'pedisk':
+                        self.codes[i].set_parameter(5, disk.accretion_rate.value_in(
+                            units.g/units.s))
+                    elif self._params['vader_mode'] == 'pedisk_nataccr':
+                        self.codes[i].set_parameter(5, self._params['alpha'])
+                    self.codes[i].set_parameter(6,
+                        disk.central_mass.value_in(units.MSun))
+
+                channels_to_codes[i].copy()
+
+                disk.ipe_mass_loss += disk.internal_photoevap_flag * \
+                    disk.inner_photoevap_rate * dt
+                disk.epe_mass_loss += disk.external_photoevap_flag * \
+                    disk.outer_photoevap_rate * dt
+
+            start = time.time()
+            pool = []
+            for i in range(len(evolve_disk_ids)):
+                pool.append( self.codes[i].evolve_model.asynchronous(
+                    self.codes[i].model_time + dt) )
+
+            for i in range(len(evolve_disk_ids)):
+                try:
+                    pool[i].wait()
+                except:
+                    print ("[PPDA] Absolute convergence failure at {a} Myr".format(
+                        a=self.disks[evolve_disk_ids[i]].model_time.value_in(
+                            units.Myr)), flush=True)
+                    self.disks[evolve_disk_ids[i]].disk_convergence_failure = True
+            end = time.time()
+
+            for i in range(len(evolve_disk_ids)):
+                disk = self.disks[evolve_disk_ids[i]]
+                disk.model_time += dt
+                accreted_mass = -self.codes[i].inner_boundary_mass_out - \
+                    accreted_mass_before[i]
+                disk.accreted_mass += accreted_mass
+                if self.dust_model == 'Haworth2018':
+                    accreted_dust = min(disk.disk_dust_mass,
+                        disk.delta*accreted_mass)
+                    disk.accreted_mass  += accreted_dust
+                    disk.disk_dust_mass -= accreted_dust
+                channels_from_codes[i].copy()
+
+                if disk.disk_gas_mass < 0.00008 | units.MSun:
+                    disk.disk_dispersed = True
+                    print ('[PPDA] Disk dispersal at {a} Myr'.format(
+                        a=disk.model_time.value_in(units.Myr)))
 
 
-    def evolve_Haworth2018_dust_model (self, disk, dt):
-        # Remove dust in a leapfrog-like integration
-        # Follows the prescription of Haworth et al. 2018 (MNRAS 475)
+    def evolve_Haworth2018_dust_model (self, disk_ids, dt):
+        # Remove dust following the prescription of Haworth et al. 2018 (MNRAS 475)
+
+      for i in range(len(disk_ids)):
+        disk = self.disks[disk_ids[i]]
 
         # Thermal speed of particles
         v_th =(8.*constants.kB*disk.Tm/np.sqrt(disk.disk_radius.value_in(units.AU))\
@@ -427,19 +476,20 @@ class PPDPopulationAsync:
 
                 host_star_id = start + i
 
-                viscous = self.setup_viscous_code(host_star_id)
+                #viscous = self.setup_viscous_code(host_star_id)
 
                 new_disk = disk_class.Disk(
                     initial_disk_radius(new_star_particles.mass[i], 
                         max_frac=self.max_frac), 
                     initial_disk_mass(new_star_particles.mass[i],
                         max_frac=self.max_frac),
-                    new_star_particles[i].mass, viscous.grid,
+                    new_star_particles[i].mass, self.codes[0].grid,
                     self._params['alpha'])
 
                 new_disk.host_star_id = host_star_id
                 new_disk.truncation_mass_loss = 0. | units.MSun
 
+                '''
                 # Outer density in g/cm^2
                 viscous.set_parameter(2, 1E-12)
                 # Disk midplane temperature at 1 AU in K
@@ -468,6 +518,7 @@ class PPDPopulationAsync:
                     new_disk.grid)
                 new_disk.channel_to_code = new_disk.grid.new_channel_to(
                     viscous.grid)
+                '''
 
                 self.disks.append(new_disk)
 
@@ -571,8 +622,8 @@ class PPDPopulationAsync:
 
     def stop (self):
 
-        disk_class.stop_codes(
-            [ disk.viscous for disk in self.disks if disk is not None ])
+        for code in self.codes:
+            code.stop()
 
 
     def write_particles (self, filepath='./', label='', overwrite=True):
@@ -619,7 +670,7 @@ class PPDPopulationAsync:
 
 
 def restart_population (filepath, input_counter, alpha, mu, n_cells, r_min, r_max, 
-        fried_folder='./', sph_hydro=None, grid_hydro=None, 
+        number_of_workers=8, fried_folder='./', sph_hydro=None, grid_hydro=None, 
         label='', extra_attributes=[], vader_mode='pedisk_nataccr'):
 
     if path.isfile(filepath+'/viscous_grids_{b}i{a:05}.hdf5'.format(
@@ -640,8 +691,9 @@ def restart_population (filepath, input_counter, alpha, mu, n_cells, r_min, r_ma
 
 
     ppd_code = PPDPopulationAsync(alpha=alpha, mu=mu, number_of_cells=n_cells,
-            r_min=r_min, r_max=r_max, fried_folder=fried_folder, 
-            sph_hydro=sph_hydro, grid_hydro=grid_hydro, vader_mode=vader_mode)
+            number_of_workers=number_of_workers, r_min=r_min, r_max=r_max,
+            fried_folder=fried_folder, sph_hydro=sph_hydro, grid_hydro=grid_hydro,
+            vader_mode=vader_mode)
 
 
     if star_particles is None:
@@ -685,10 +737,10 @@ def restart_population (filepath, input_counter, alpha, mu, n_cells, r_min, r_ma
 
         else:
 
-            viscous = ppd_code.setup_viscous_code(i)
+            #viscous = ppd_code.setup_viscous_code(i)
 
             disk = disk_class.Disk(100.|units.AU, 0.1|units.MSun,
-                star_particles.initial_mass[i], viscous.grid,
+                star_particles.initial_mass[i], ppd_code.codes[0].grid,
                 alpha, mu=mu, fried_folder=fried_folder)
 
             host_star = star_particles[i]
@@ -705,6 +757,7 @@ def restart_population (filepath, input_counter, alpha, mu, n_cells, r_min, r_ma
             disk.grid.column_density = grids[disk_counter].column_density
             disk.grid.pressure = grids[disk_counter].pressure
 
+            '''
             disk.channel_from_code = viscous.grid.new_channel_to(disk.grid)
             disk.channel_to_code =   disk.grid.new_channel_to(viscous.grid)
 
@@ -730,6 +783,7 @@ def restart_population (filepath, input_counter, alpha, mu, n_cells, r_min, r_ma
                 star_particles[i].mass.value_in(units.MSun))
 
             disk.viscous = viscous
+            '''
 
             ppd_code.disks.append(disk)
 

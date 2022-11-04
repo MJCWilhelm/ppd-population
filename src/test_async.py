@@ -84,7 +84,7 @@ def compare_to_pooled (M):
     ppd_async.stop()
 
 
-def test_scaling (N):
+def test_scaling (N, number_of_workers=4):
 
     kroupa_imf = MultiplePartIMF(mass_boundaries=[0.08, 0.5, 1.9]|units.MSun,
         alphas=[-1.3, -2.3])
@@ -103,7 +103,8 @@ def test_scaling (N):
         stars[-1].fuv_luminosity = 1e0 | units.LSun
 
         #start = time.time()
-        ppd_async = PPDPopulationAsync(vader_mode='pedisk')
+        ppd_async = PPDPopulationAsync(vader_mode='pedisk', 
+            number_of_workers=number_of_workers)
         #end = time.time()
         #print ("Starting async took {b} s".format(b=end-start))
 
@@ -115,11 +116,13 @@ def test_scaling (N):
             a=len(stars), b=np.sum(M<1.9|units.MSun), c=end-start))
 
         start = time.time()
-        ppd_async.evolve_model(1.|units.kyr)
+        ppd_async.evolve_model(10.|units.kyr)
         end = time.time()
         timer_run[i] = end-start
         print ("Running {a} async disks took {b} s".format(
             a=np.sum(M<1.9|units.MSun), b=end-start))
+
+        ppd_async.stop()
 
 
     fig = plt.figure()
@@ -444,7 +447,8 @@ if __name__ == '__main__':
     #compare_to_pooled(M)
 
     #N = np.array([1, 2, 3, 4, 5, 6, 7, 8, 16, 32, 64])
-    #test_scaling(N+1)
+    N = np.array([4, 8, 16, 32, 64, 128, 256, 512, 1024])
+    test_scaling(N+1, number_of_workers=2)
 
     #test_radiation_field()
 
@@ -452,6 +456,6 @@ if __name__ == '__main__':
 
     #test_restartibility(10)
 
-    test_population(30)
+    #test_population(5)
 
     plt.show()
