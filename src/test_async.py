@@ -18,13 +18,13 @@ from test_pool import FUV_luminosity_from_mass
 def compare_to_pooled (M):
 
     start = time.time()
-    ppd_pool  = PPD_population()
+    ppd_pool  = PPD_population(max_frac=0.1)
     end = time.time()
     print ("Starting pool with {a} workers took {b} s".format(a=len(ppd_pool.codes),
         b=end-start))
 
     start = time.time()
-    ppd_async = PPDPopulationAsync(vader_mode='pedisk')
+    ppd_async = PPDPopulationAsync(vader_mode='pedisk_nataccr', max_frac=0.1)
     end = time.time()
     print ("Starting async took {b} s".format(b=end-start))
 
@@ -45,17 +45,21 @@ def compare_to_pooled (M):
     print ("Adding {a} stars ({b} disks) to async took {c} s".format(
         a=len(stars), b=np.sum(M<1.9|units.MSun), c=end-start))
 
-    #print (ppd_pool.star_particles.disk_gas_mass.value_in(units.MSun))
-    #print (ppd_async.star_particles.disk_gas_mass.value_in(units.MSun))
+    print (ppd_pool.star_particles.disk_gas_mass.value_in(units.MSun))
+    print (ppd_async.star_particles.disk_gas_mass.value_in(units.MSun))
+
+    accr_rates = [ disk.accretion_rate.value_in(units.MSun/units.yr) for disk in ppd_pool.disks if disk is not None ] | units.MSun/units.yr
 
     start = time.time()
-    ppd_pool.evolve_model(10.|units.kyr)
+    for i in range(1):
+        ppd_pool.evolve_model(10.*(i+1)|units.kyr)
     end = time.time()
     print ("Running {a} pooled disks took {b} s".format(a=np.sum(M<1.9|units.MSun),
         b=end-start))
 
     start = time.time()
-    ppd_async.evolve_model(10.|units.kyr)
+    for i in range(1):
+        ppd_async.evolve_model(10.*(i+1)|units.kyr)
     end = time.time()
     print ("Running {a} async disks took {b} s".format(a=np.sum(M<1.9|units.MSun),
         b=end-start))
@@ -65,11 +69,21 @@ def compare_to_pooled (M):
     print ((ppd_pool.star_particles.epe_mass_loss - ppd_async.star_particles.epe_mass_loss).value_in(units.MSun))
     print ((ppd_pool.star_particles.accreted_mass - ppd_async.star_particles.accreted_mass).value_in(units.MSun))
 
-    fig = plt.figure()
-    ax = fig.add_subplot(111)
+    print ((ppd_pool.star_particles.disk_gas_mass + ppd_pool.star_particles.ipe_mass_loss + ppd_pool.star_particles.epe_mass_loss + ppd_pool.star_particles.accreted_mass).value_in(units.MSun))
+    print ((ppd_async.star_particles.disk_gas_mass + ppd_async.star_particles.ipe_mass_loss + ppd_async.star_particles.epe_mass_loss + ppd_async.star_particles.accreted_mass).value_in(units.MSun))
 
-    ax.set_xscale('log')
-    ax.set_yscale('symlog')
+    #print ([ code.inner_boundary_mass_out.value_in(units.kyr) for code in ppd_async.codes ])
+    print (([ (code.inner_boundary_mass_out/code.model_time).value_in(units.MSun/units.yr) for code in ppd_pool.codes[:-1] ]|units.MSun/units.yr)/accr_rates)
+
+    fig = plt.figure()
+    ax1 = fig.add_subplot(211)
+    ax2 = fig.add_subplot(212)
+
+    ax1.set_xscale('log')
+    ax1.set_yscale('symlog')
+
+    ax2.set_xscale('log')
+    ax2.set_yscale('log')
 
     for i in range(len(M)):
         if M[i] < 1.9 | units.MSun:
@@ -78,7 +92,10 @@ def compare_to_pooled (M):
             coldens_async = ppd_async.disks[i].grid.column_density
             print (np.sum(coldens_async == coldens_pool))
 
-            ax.plot(r, abs(coldens_async - coldens_pool)/coldens_pool)
+            ax1.plot(r, abs(coldens_async - coldens_pool)/coldens_pool)
+            ax2.plot(r, coldens_pool.value_in(units.g/units.cm**2), c='C'+str(i))
+            ax2.plot(r, coldens_async.value_in(units.g/units.cm**2), c='C'+str(i),
+                linestyle=':')
 
     ppd_pool.stop()
     ppd_async.stop()
@@ -444,11 +461,12 @@ if __name__ == '__main__':
     np.random.seed(940234457)
 
     #M = np.array([0.08, 0.5, 1., 1.8, 16.])|units.MSun
-    #compare_to_pooled(M)
+    M = np.array([1.8, 1.8, 1.8, 1.8, 16.])|units.MSun
+    compare_to_pooled(M[-2:])
 
     #N = np.array([1, 2, 3, 4, 5, 6, 7, 8, 16, 32, 64])
-    N = np.array([4, 8, 16, 32, 64, 128, 256, 512, 1024])
-    test_scaling(N+1, number_of_workers=2)
+    #N = np.array([4, 8, 16, 32, 64, 128, 256, 512, 1024])
+    #test_scaling(N+1, number_of_workers=2)
 
     #test_radiation_field()
 

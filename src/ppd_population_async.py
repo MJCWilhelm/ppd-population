@@ -331,11 +331,13 @@ class PPDPopulationAsync:
                 accreted_mass = -self.codes[i].inner_boundary_mass_out - \
                     accreted_mass_before[i]
                 disk.accreted_mass += accreted_mass
+                ''' May still be available for planet formation through pebble accretion
                 if self.dust_model == 'Haworth2018':
                     accreted_dust = min(disk.disk_dust_mass,
                         disk.delta*accreted_mass)
                     disk.accreted_mass  += accreted_dust
                     disk.disk_dust_mass -= accreted_dust
+                '''
                 channels_from_codes[i].copy()
 
                 if disk.disk_gas_mass < 0.00008 | units.MSun:
@@ -755,14 +757,19 @@ def restart_population (filepath, input_counter, alpha, mu, n_cells, r_min, r_ma
 
             host_star = star_particles[i]
 
-            disk.model_time = grids.get_timestamp()
+            #disk.model_time = grids.get_timestamp()
+            disk.central_mass = host_star.mass
             disk.disk_dispersed = host_star.disk_dispersed
             disk.disk_convergence_failure = host_star.disk_convergence_failure
             disk.disk_dust_mass = host_star.disk_dust_mass
             disk.accreted_mass = host_star.accreted_mass
             disk.t_viscous = host_star.t_viscous
+            if hasattr(host_star, 'age'):
+                disk.age = host_star.age
             disk.host_star_id = i
             disk.truncation_mass_loss = host_star.truncation_mass_loss
+            disk.ipe_mass_loss = host_star.ipe_mass_loss
+            disk.epe_mass_loss = host_star.epe_mass_loss
 
             disk.grid.column_density = grids[disk_counter].column_density
             disk.grid.pressure = grids[disk_counter].pressure
