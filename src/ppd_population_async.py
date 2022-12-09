@@ -109,21 +109,24 @@ class PPDPopulationAsync:
         host_stars = self.star_particles[disk_ids]
         mask_not_ejected = host_stars.star_ejected == False
 
-        epe_rate = np.zeros(len(disk_ids)) * 1e-10 | units.MSun/units.yr
+        epe_rate = np.ones(len(disk_ids)) * 1e-10 | units.MSun/units.yr
 
         host_stars[mask_not_ejected == False].fuv_ambient_flux = 0. | G0
-
 
         F = self.compute_rad_field(disk_ids[mask_not_ejected])
 
         host_stars[mask_not_ejected].fuv_ambient_flux = F
 
-        epe_rate[mask_not_ejected] = self.interpolator.interp_amuse(
-            host_stars[mask_not_ejected].mass, F,
+        mask_nonzero_F = F > 0.|G0
+
+        inds_epe = np.arange(len(disk_ids))[mask_not_ejected][mask_nonzero_F]
+
+        epe_rate[inds_epe] = self.interpolator.interp_amuse(
+            host_stars[inds_epe].mass, F[mask_nonzero_F],
             [ self.disks[disk_id].disk_gas_mass.value_in(units.MSun) \
-                for disk_id in disk_ids[mask_not_ejected] ] | units.MSun,
+                for disk_id in disk_ids[inds_epe] ] | units.MSun,
             [ self.disks[disk_id].disk_radius.value_in(units.au) \
-                for disk_id in disk_ids[mask_not_ejected] ] | units.au)
+                for disk_id in disk_ids[inds_epe] ] | units.au)
 
         return epe_rate
 
@@ -176,20 +179,24 @@ class PPDPopulationAsync:
 
         mask_active = [ disk is not None and disk.disk_active == True \
             for disk in self.disks ]
-        disk_ids = np.arange(len(self.disks))[mask_active]
 
-        epe_rate = self.compute_epe_rate(disk_ids)
-        for i in range(len(disk_ids)):
-            self.disks[disk_ids[i]].outer_photoevap_rate = epe_rate[i]
-            self.disks[disk_ids[i]].central_mass = \
-                self.star_particles[disk_ids[i]].mass
+        if len(mask_active):
+            disk_ids = np.arange(len(self.disks))[mask_active]
 
-        start = time.time()
-        self.evolve_model_adaptive(disk_ids, end_time - self.model_time)
-        end = time.time()
+            epe_rate = self.compute_epe_rate(disk_ids)
+            for i in range(len(disk_ids)):
+                self.disks[disk_ids[i]].outer_photoevap_rate = epe_rate[i]
+                self.disks[disk_ids[i]].central_mass = \
+                    self.star_particles[disk_ids[i]].mass
 
-        self.copy_from_disks()
-        self.star_particles.radius = 0.02 | units.pc
+            start = time.time()
+            self.evolve_model_adaptive(disk_ids, end_time - self.model_time)
+            end = time.time()
+
+            self.copy_from_disks()
+
+        if len(self.star_particles):
+            self.star_particles.radius = 0.02 | units.pc
 
         self.model_time = end_time
 
@@ -314,6 +321,8 @@ class PPDPopulationAsync:
                         a=self.disks[evolve_disk_ids[i]].model_time.value_in(
                             units.Myr)), flush=True)
                     self.disks[evolve_disk_ids[i]].disk_convergence_failure = True
+                    plt.loglog(self.codes[i].grid.r.value_in(units.AU), self.codes[i].grid.column_density.value_in(units.g/units.cm**2))
+                    plt.show()
             end = time.time()
 
             for i in range(len(evolve_disk_ids)):
@@ -671,7 +680,8 @@ class PPDPopulationAsync:
 
 def restart_population (filepath, input_counter, alpha, mu, n_cells, r_min, r_max, 
         number_of_workers=8, fried_folder='./', sph_hydro=None, grid_hydro=None, 
-        label='', extra_attributes=[], vader_mode='pedisk_nataccr'):
+        label='', extra_attributes=[], vader_mode='pedisk_nataccr', 
+        max_frac=1.):
 
     if path.isfile(filepath+'/viscous_grids_{b}i{a:05}.hdf5'.format(
             a=input_counter, b=label)):
@@ -693,7 +703,7 @@ def restart_population (filepath, input_counter, alpha, mu, n_cells, r_min, r_ma
     ppd_code = PPDPopulationAsync(alpha=alpha, mu=mu, number_of_cells=n_cells,
             number_of_workers=number_of_workers, r_min=r_min, r_max=r_max,
             fried_folder=fried_folder, sph_hydro=sph_hydro, grid_hydro=grid_hydro,
-            vader_mode=vader_mode)
+            vader_mode=vader_mode, max_frac=max_frac)
 
 
     if star_particles is None:
