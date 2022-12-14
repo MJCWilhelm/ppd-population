@@ -317,9 +317,9 @@ class PPDPopulationAsync:
                 try:
                     pool[i].wait()
                 except:
-                    print ("[PPDA] Absolute convergence failure at {a} Myr".format(
+                    print ("[PPDA] Disk {b} absolute convergence failure at {a} Myr".format(
                         a=self.disks[evolve_disk_ids[i]].model_time.value_in(
-                            units.Myr)), flush=True)
+                            units.Myr), b=evolve_disk_ids[i]), flush=True)
                     self.disks[evolve_disk_ids[i]].disk_convergence_failure = True
                     plt.loglog(self.codes[i].grid.r.value_in(units.AU), self.codes[i].grid.column_density.value_in(units.g/units.cm**2))
                     plt.show()
@@ -342,8 +342,9 @@ class PPDPopulationAsync:
 
                 if disk.disk_gas_mass < 0.00008 | units.MSun:
                     disk.disk_dispersed = True
-                    print ('[PPDA] Disk dispersal at {a} Myr'.format(
-                        a=disk.model_time.value_in(units.Myr)))
+                    print ('[PPDA] Disk {b} dispersal at {a} Myr'.format(
+                        a=disk.model_time.value_in(units.Myr),
+                        b=evolve_disk_ids[i]))
 
 
     def evolve_Haworth2018_dust_model (self, disk_ids, dt):
