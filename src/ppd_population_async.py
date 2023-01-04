@@ -20,7 +20,7 @@ class PPDPopulationAsync:
 
     def __init__ (self, alpha=1e-3, mu=2.33, number_of_cells=330, 
             number_of_workers=4, r_min=0.01|units.AU, r_max=3000.|units.AU,
-            begin_time=0.|units.Myr, max_frac=1., eta=1., fried_folder='../data/', 
+            begin_time=0.|units.Myr, max_frac=1., eta=0.3, fried_folder='../data/', 
             sph_hydro=None, grid_hydro=None, dust_model='Haworth2018',
             vader_mode='pedisk_nataccr'):
 
@@ -284,7 +284,7 @@ class PPDPopulationAsync:
             for i in range(len(evolve_disk_ids)):
                 disk = self.disks[evolve_disk_ids[i]]
 
-                if update:
+                if True: #update:
                     self.codes[i].update_keplerian_grid(disk.central_mass)
 
                     self.codes[i].set_parameter(0, disk.internal_photoevap_flag * \
@@ -754,7 +754,7 @@ def restart_population (filepath, input_counter, alpha, mu, n_cells, r_min, r_ma
 
             disk = disk_class.Disk(100.|units.AU, 0.1|units.MSun,
                 star_particles.initial_mass[i], ppd_code.codes[0].grid,
-                alpha, mu=mu, fried_folder=fried_folder)
+                alpha, mu=mu)
 
             host_star = star_particles[i]
 
