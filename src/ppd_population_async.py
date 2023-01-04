@@ -9,7 +9,6 @@ from amuse.community.vader.interface import Vader
 from amuse.units import units, constants
 from amuse.datamodel import Particles, new_regular_grid
 from amuse.io import write_set_to_file, read_set_from_file
-#from amuse.rfi.async_request import AsyncRequestsPool
 
 import disk_class
 import FRIED_interp
@@ -20,9 +19,9 @@ class PPDPopulationAsync:
 
     def __init__ (self, alpha=1e-3, mu=2.33, number_of_cells=330, 
             number_of_workers=4, r_min=0.01|units.AU, r_max=3000.|units.AU,
-            begin_time=0.|units.Myr, max_frac=1., eta=1., fried_folder='../data/', 
+            begin_time=0.|units.Myr, max_frac=1., eta=0.3, fried_folder='../data/', 
             sph_hydro=None, grid_hydro=None, dust_model='Haworth2018',
-            vader_mode='pedisk_nataccr'):
+            vader_mode='pedisk_nataccr', dust_params=None):
 
         self.codes = [ Vader(mode=vader_mode, redirection='none') \
             for _ in range(number_of_workers) ]
@@ -36,17 +35,39 @@ class PPDPopulationAsync:
             self.codes[i].parameters.alpha = alpha
             self.codes[i].parameters.post_timestep_function = True
             self.codes[i].parameters.maximum_tolerated_change = 1E99
-            self.codes[i].parameters.number_of_user_parameters = 7
-            self.codes[i].parameters.inner_pressure_boundary_torque = \
-                0. | units.g*units.cm**2./units.s**2.
             self.codes[i].parameters.inner_pressure_boundary_type = 1
             self.codes[i].parameters.inner_boundary_function = True
+            self.codes[i].parameters.initial_timestep = 1.|units.yr
+
+            if vader_mode == 'pedisk_dusty':
+                self.codes[i].parameters.number_of_user_parameters = 14
+                self.codes[i].parameters.number_of_user_outputs = 3
+            else:
+                self.codes[i].parameters.number_of_user_parameters = 7
+                self.codes[i].parameters.number_of_user_outputs = 0
+
+            self.codes[i].recommit_parameters()
 
             # Outer density in g/cm^2
             self.codes[i].set_parameter(2, 1E-12)
             # Mean particle mass in g
             self.codes[i].set_parameter(4,
                 (mu*1.008*constants.u).value_in(units.g))
+
+            if vader_mode == 'pedisk_dusty':
+                self.codes[i].set_parameter(5, alpha)
+                self.codes[i].set_parameter(7, 
+                    dust_params['uf'].value_in(units.cm/units.s))
+                self.codes[i].set_parameter(8,
+                    dust_params['rho_s'].value_in(units.g/units.cm**3))
+                self.codes[i].set_parameter(9, dust_params['a0'].value_in(units.cm))
+                self.codes[i].set_parameter(10, dust_params['CFL'])
+                self.codes[i].set_parameter(11, 0.)
+                self.codes[i].set_parameter(12, 0.)
+                self.codes[i].set_parameter(13, 0.)
+
+            elif vader_mode == 'pedisk_nataccr':
+                self.codes[i].set_parameter(5, alpha)
 
         self._params = {
             'alpha': alpha,
@@ -58,6 +79,8 @@ class PPDPopulationAsync:
             'vader_mode': vader_mode,
             'max_frac': max_frac,
         }
+
+        self.dust_params = dust_params
 
         self.max_frac = max_frac
         self.eta = eta
@@ -189,9 +212,7 @@ class PPDPopulationAsync:
                 self.disks[disk_ids[i]].central_mass = \
                     self.star_particles[disk_ids[i]].mass
 
-            start = time.time()
             self.evolve_model_adaptive(disk_ids, end_time - self.model_time)
-            end = time.time()
 
             self.copy_from_disks()
 
@@ -238,11 +259,13 @@ class PPDPopulationAsync:
 
         if self._params['vader_mode'] == 'pedisk':
             # Compatibility with old model, should be bitwise equal to that!
+            # Not any more now that 2nd call updates accretion rate, but it was that
+            # or using parameters from different disks...
             self.evolve_disks(disk_ids[ mask_active ], dt/2.)
 
             self.evolve_Haworth2018_dust_model(disk_ids[ mask_active ], dt)
 
-            self.evolve_disks(disk_ids[ mask_active ], dt/2., update=False)
+            self.evolve_disks(disk_ids[ mask_active ], dt/2.)
 
         else:
             # Leap-frog like operator splitting for Haworth dust model
@@ -256,7 +279,7 @@ class PPDPopulationAsync:
                 self.evolve_Haworth2018_dust_model(disk_ids[ mask_active ], dt/2.)
 
 
-    def evolve_disks (self, disk_ids, dt, update=True):
+    def evolve_disks (self, disk_ids, dt):
 
         print ("[PPDA] Evolving {a}/{b} disks for {c} kyr".format(
             a=len(disk_ids), b=len(self.disked_stars), c=dt.value_in(units.kyr)))
@@ -265,85 +288,129 @@ class PPDPopulationAsync:
 
         # Treat disk ids to evolve as a stack
         while len(active_disk_ids):
+
             evolve_disk_ids, accreted_mass_before = [], []
+            ipe_before, epe_before = [], []
+
             channels_to_codes, channels_from_codes = [], []
+
             counter = 0
             # Pop off stack a number of disks equal to the number of codes, or the
             # remaining disks if smaller
             while len(evolve_disk_ids) < len(self.codes) and len(active_disk_ids):
+
                 evolve_disk_ids.append(active_disk_ids.pop(0))
-                channels_from_codes.append(self.codes[counter].grid.new_channel_to(
-                    self.disks[evolve_disk_ids[counter]].grid))
-                channels_to_codes.append(
+
+                # Make channels to copy data between disks/codes
+                channels_from_codes.append([self.codes[counter].grid.new_channel_to(
+                    self.disks[evolve_disk_ids[counter]].grid)])
+                channels_to_codes.append([
                     self.disks[evolve_disk_ids[counter]].grid.new_channel_to(
-                        self.codes[counter].grid))
+                        self.codes[counter].grid)])
+
+                # Make additional channels for the user grid, if present
+                if self.codes[0].parameters.number_of_user_outputs:
+                    channels_from_codes[-1].append(
+                      self.codes[counter].grid_user.new_channel_to(
+                        self.disks[evolve_disk_ids[counter]].grid_user))
+                    channels_to_codes[-1].append(
+                      self.disks[evolve_disk_ids[counter]].grid_user.new_channel_to(
+                        self.codes[counter].grid_user))
+
+                # Get mass lost in code before now, to compute mass lost in step
                 accreted_mass_before.append(
                     -self.codes[counter].inner_boundary_mass_out)
+                ipe_before.append(self.codes[counter].get_parameter(12))
+                epe_before.append(self.codes[counter].get_parameter(13))
+
                 counter += 1
 
             for i in range(len(evolve_disk_ids)):
+                # Prepare codes for evolution by implanting disk
                 disk = self.disks[evolve_disk_ids[i]]
 
-                if update:
-                    self.codes[i].update_keplerian_grid(disk.central_mass)
+                self.codes[i].update_keplerian_grid(disk.central_mass)
 
-                    self.codes[i].set_parameter(0, disk.internal_photoevap_flag * \
-                        disk.inner_photoevap_rate.value_in(units.g/units.s))
-                    self.codes[i].set_parameter(1, disk.external_photoevap_flag * \
-                        disk.outer_photoevap_rate.value_in(units.g/units.s))
+                self.codes[i].set_parameter(0, disk.internal_photoevap_flag * \
+                    disk.inner_photoevap_rate.value_in(units.g/units.s))
+                self.codes[i].set_parameter(1, disk.external_photoevap_flag * \
+                    disk.outer_photoevap_rate.value_in(units.g/units.s))
+                if self._params['vader_mode'] == 'pedisk_dust':
+                    self.codes[i].set_parameter(3,
+                        self.dust_params['Tsubl'].value_in(units.K))
+                else:
                     self.codes[i].set_parameter(3, disk.Tm.value_in(units.K))
-                    if self._params['vader_mode'] == 'pedisk':
-                        self.codes[i].set_parameter(5, disk.accretion_rate.value_in(
-                            units.g/units.s))
-                    elif self._params['vader_mode'] == 'pedisk_nataccr':
-                        self.codes[i].set_parameter(5, self._params['alpha'])
-                    self.codes[i].set_parameter(6,
-                        disk.central_mass.value_in(units.MSun))
+                if self._params['vader_mode'] == 'pedisk':
+                    self.codes[i].set_parameter(5, disk.accretion_rate.value_in(
+                        units.g/units.s))
+                self.codes[i].set_parameter(6,
+                    disk.central_mass.value_in(units.MSun))
 
-                channels_to_codes[i].copy()
+                for channel in channels_to_codes[i]:
+                    channel.copy()
 
-                disk.ipe_mass_loss += disk.internal_photoevap_flag * \
-                    disk.inner_photoevap_rate * dt
-                disk.epe_mass_loss += disk.external_photoevap_flag * \
-                    disk.outer_photoevap_rate * dt
+                if self._params['vader_mode'] != 'pedisk_dusty':
+                    disk.ipe_mass_loss += disk.internal_photoevap_flag * \
+                        disk.inner_photoevap_rate * dt
+                    disk.epe_mass_loss += disk.external_photoevap_flag * \
+                        disk.outer_photoevap_rate * dt
 
-            start = time.time()
             pool = []
             for i in range(len(evolve_disk_ids)):
+                # Add jobs to pool
                 pool.append( self.codes[i].evolve_model.asynchronous(
                     self.codes[i].model_time + dt) )
 
             for i in range(len(evolve_disk_ids)):
+                # This errors if the code crashes, if so continue the simulation
+                # but turn off this disk's evolution
                 try:
                     pool[i].wait()
                 except:
-                    print ("[PPDA] Absolute convergence failure at {a} Myr".format(
+                    print ("[PPDA] Absolute convergence failure of disk {b} at {a} Myr".format(
                         a=self.disks[evolve_disk_ids[i]].model_time.value_in(
-                            units.Myr)), flush=True)
+                            units.Myr), b=evolve_disk_ids[i]), flush=True)
                     self.disks[evolve_disk_ids[i]].disk_convergence_failure = True
-                    plt.loglog(self.codes[i].grid.r.value_in(units.AU), self.codes[i].grid.column_density.value_in(units.g/units.cm**2))
-                    plt.show()
-            end = time.time()
+                # Also take errors of dust evolution into account
+                if self._params['vader_mode'] == 'pedisk_dusty' and \
+                        self.codes[i].get_parameter(11) != 0.:
+                    print ("[PPDA] Absolute convergence failure at of disk {b} at {a} Myr, in dust".format(
+                        a=self.disks[evolve_disk_ids[i]].model_time.value_in(
+                            units.Myr), b=evolve_disk_ids[i]), flush=True)
+                    self.disks[evolve_disk_ids[i]].disk_convergence_failure = True
 
             for i in range(len(evolve_disk_ids)):
+                # Extract updated information from codes
                 disk = self.disks[evolve_disk_ids[i]]
+
                 disk.model_time += dt
+
                 accreted_mass = -self.codes[i].inner_boundary_mass_out - \
                     accreted_mass_before[i]
                 disk.accreted_mass += accreted_mass
                 ''' May still be available for planet formation through pebble accretion
                 if self.dust_model == 'Haworth2018':
-                    accreted_dust = min(disk.disk_dust_mass,
+                    accreted_dust = min(disk._disk_dust_mass,
                         disk.delta*accreted_mass)
                     disk.accreted_mass  += accreted_dust
-                    disk.disk_dust_mass -= accreted_dust
+                    disk._disk_dust_mass -= accreted_dust
                 '''
-                channels_from_codes[i].copy()
+
+                if self._params['vader_mode'] == 'pedisk_dusty':
+                    disk.ipe_mass_loss += (self.codes[i].get_parameter(12) - \
+                        ipe_before[i]) | units.g
+                    disk.epe_mass_loss += (self.codes[i].get_parameter(13) - \
+                        epe_before[i]) | units.g
+
+                for channel in channels_from_codes[i]:
+                    channel.copy()
 
                 if disk.disk_gas_mass < 0.00008 | units.MSun:
+                    # Dispersed if below 1% of a 10% disk of a 0.08 MSun star
                     disk.disk_dispersed = True
-                    print ('[PPDA] Disk dispersal at {a} Myr'.format(
-                        a=disk.model_time.value_in(units.Myr)))
+                    print ('[PPDA] Disk {b} dispersal at {a} Myr'.format(
+                        a=disk.model_time.value_in(units.Myr), 
+                        b=evolve_disk_ids[i]), flush=True)
 
 
     def evolve_Haworth2018_dust_model (self, disk_ids, dt):
@@ -375,14 +442,17 @@ class PPDPopulationAsync:
         dM_dust = disk.dust_photoevap_rate * dt
         if disk.disk_dispersed: # If disk is dispersed, do only half a step
             dM_dust /= 2.
-        disk.disk_dust_mass -= dM_dust
+        disk._disk_dust_mass -= dM_dust
 
         # Can't have negative mass
-        if  disk.disk_dust_mass < 0. | units.MSun:
-            disk.disk_dust_mass = 0. | units.MSun
+        if  disk._disk_dust_mass < 0. | units.MSun:
+            disk._disk_dust_mass = 0. | units.MSun
 
 
     def _periastron_distance (self, stars):
+        '''
+        Compute the periastron of two stars' two-body orbit
+        '''
 
         mu = constants.G * stars.mass.sum()
 
@@ -404,6 +474,9 @@ class PPDPopulationAsync:
 
 
     def resolve_encounters (self):
+        '''
+        Resolve all dynamic truncations
+        '''
 
         if self.collision_detector is None:
             print ("[PPDA] No collision detector set!")
@@ -441,6 +514,12 @@ class PPDPopulationAsync:
                     const = constants.kB / (disk.mu*1.008*constants.u)
                     T = disk.Tm/np.sqrt(disk.grid[mask].r.value_in(units.AU))
                     disk.grid[mask].pressure = (1e-12 | units.g/units.cm**2) * T * const
+
+                    # Also truncate dust, including resetting dust sizes
+                    if self._params['vader_mode'] == 'pedisk_dusty':
+                        disk.grid_user[0,mask].value = 1e-14
+                        disk.grid_user[1,mask].value = \
+                            self.dust_params['a0'].value_in(units.cm)
 
                     self.star_particles[disk.host_star_id].radius = 0.49 * r_min
 
@@ -487,8 +566,6 @@ class PPDPopulationAsync:
 
                 host_star_id = start + i
 
-                #viscous = self.setup_viscous_code(host_star_id)
-
                 new_disk = disk_class.Disk(
                     initial_disk_radius(new_star_particles.mass[i], 
                         max_frac=self.max_frac), 
@@ -497,39 +574,17 @@ class PPDPopulationAsync:
                     new_star_particles[i].mass, self.codes[0].grid,
                     self._params['alpha'])
 
+                if self._params['vader_mode'] == 'pedisk_dusty':
+                    new_disk.grid_user = self.codes[0].grid_user.copy()
+                    new_disk.grid_user[0].value = 0.01 * \
+                        new_disk.grid.column_density.value_in(units.g/units.cm**2)
+                    new_disk.grid_user[1].value = \
+                        self.dust_params['a0'].value_in(units.cm)
+                    new_disk.grid_user[2].value = new_disk.Tm.value_in(units.K) * \
+                        new_disk.grid.r.value_in(units.au)**-0.5
+
                 new_disk.host_star_id = host_star_id
                 new_disk.truncation_mass_loss = 0. | units.MSun
-
-                '''
-                # Outer density in g/cm^2
-                viscous.set_parameter(2, 1E-12)
-                # Disk midplane temperature at 1 AU in K
-                viscous.set_parameter(3, new_disk.Tm.value_in(units.K))
-                # Mean particle mass in g
-                viscous.set_parameter(4,
-                    (self._params['mu']*1.008*constants.u).value_in(units.g))
-                # Disk accretion rate
-                if self._params['vader_mode'] == 'pedisk':
-                    viscous.set_parameter(5,
-                        new_disk.accretion_rate.value_in(units.g/units.s))
-                    viscous.parameters.inner_pressure_boundary_type = 1
-                    viscous.parameters.inner_boundary_function = True
-                    viscous.parameters.inner_pressure_boundary_torque = \
-                        0. | units.g*units.cm**2./units.s**2.
-                elif self._params['vader_mode'] == 'pedisk_nataccr':
-                    # Disk alpha viscosity
-                    viscous.set_parameter(5, self._params['alpha'])
-                # Stellar mass in MSun
-                viscous.set_parameter(6,
-                    self.star_particles[host_star_id].mass.value_in(units.MSun))
-
-                new_disk.viscous = viscous
-
-                new_disk.channel_from_code = viscous.grid.new_channel_to(
-                    new_disk.grid)
-                new_disk.channel_to_code = new_disk.grid.new_channel_to(
-                    viscous.grid)
-                '''
 
                 self.disks.append(new_disk)
 
@@ -544,21 +599,6 @@ class PPDPopulationAsync:
                 self.star_particles[start+i].disk_key = -1
 
         self.copy_from_disks()
-
-
-    def setup_viscous_code (self, host_star_id):
-
-        viscous = Vader(mode=self._params['vader_mode'], redirection='none')
-        viscous.initialize_keplerian_grid(self._params['n_cells'], False,
-            self._params['r_min'], self._params['r_max'], 
-            self.star_particles[host_star_id].mass)
-
-        viscous.parameters.alpha = self._params['alpha']
-        viscous.parameters.post_timestep_function = True
-        viscous.parameters.maximum_tolerated_change = 1E99
-        viscous.parameters.number_of_user_parameters = 7
-
-        return viscous
 
 
     def copy_from_disks (self):
@@ -660,6 +700,12 @@ class PPDPopulationAsync:
 
         grids = new_regular_grid((N_disks, N_grid), [1., 1.], axes_names='nm')
 
+        with_grid_user = self.codes[0].parameters.number_of_user_outputs > 0
+        if with_grid_user:
+            grids_user = new_regular_grid(
+                (N_disks, self.codes[0].parameters.number_of_user_outputs, N_grid),
+                [1., 1., 1.], axes_names='nml')
+
         for i in range(N_disks):
             disk = self.disks[self.disked_stars[i].disk_key]
 
@@ -667,13 +713,23 @@ class PPDPopulationAsync:
             grids[i].column_density = disk.grid.column_density
             grids[i].pressure = disk.grid.pressure
 
+            if with_grid_user:
+                grids_user[i].value = disk.grid_user.value
+
         write_set_to_file(grids, filepath+'/viscous_grids_{b}i{a:05}.hdf5'.format(
             a=self.output_counter, b=label), 'hdf5', timestamp=self.model_time, 
             overwrite_file=overwrite)
 
+        if with_grid_user:
+            write_set_to_file(grids_user, 
+                filepath+'viscous_grids_user_{b}i{a:05}.hdf5'.format(
+                a=self.output_counter, b=label), 'hdf5', timestamp=self.model_time, 
+                overwrite_file=overwrite)
+
 
     def write_parameters (self, filepath='./', overwrite=True):
 
+        self._params['dust_params'] = self.dust_params
         if not path.isfile(filepath+'/viscous_params.pickle'):
             param_dump = open(filepath+'/viscous_params.pickle', 'wb')
             pickle.dump(self._params, param_dump)
@@ -681,9 +737,9 @@ class PPDPopulationAsync:
 
 
 def restart_population (filepath, input_counter, alpha, mu, n_cells, r_min, r_max, 
-        number_of_workers=8, fried_folder='./', sph_hydro=None, grid_hydro=None, 
+        number_of_workers=4, fried_folder='./', sph_hydro=None, grid_hydro=None, 
         label='', extra_attributes=[], vader_mode='pedisk_nataccr', 
-        max_frac=1.):
+        max_frac=1., dust_params=None):
 
     if path.isfile(filepath+'/viscous_grids_{b}i{a:05}.hdf5'.format(
             a=input_counter, b=label)):
@@ -692,6 +748,14 @@ def restart_population (filepath, input_counter, alpha, mu, n_cells, r_min, r_ma
             b=label), 'hdf5')
     else:
         grids = None
+
+    if path.isfile(filepath+'/viscous_grids_user_{b}i{a:05}.hdf5'.format(
+            a=input_counter, b=label)):
+        grids_user = read_set_from_file(
+            filepath+'/viscous_grids_user_{b}i{a:05}.hdf5'.format(a=input_counter,
+            b=label), 'hdf5')
+    else:
+        grids_user = None
 
     if path.isfile(filepath+'/viscous_particles_{b}i{a:05}.hdf5'.format(
             a=input_counter, b=label)):
@@ -705,7 +769,7 @@ def restart_population (filepath, input_counter, alpha, mu, n_cells, r_min, r_ma
     ppd_code = PPDPopulationAsync(alpha=alpha, mu=mu, number_of_cells=n_cells,
             number_of_workers=number_of_workers, r_min=r_min, r_max=r_max,
             fried_folder=fried_folder, sph_hydro=sph_hydro, grid_hydro=grid_hydro,
-            vader_mode=vader_mode, max_frac=max_frac)
+            vader_mode=vader_mode, max_frac=max_frac, dust_params=dust_params)
 
 
     if star_particles is None:
@@ -740,7 +804,6 @@ def restart_population (filepath, input_counter, alpha, mu, n_cells, r_min, r_ma
             setattr(ppd_code.star_particles, attribute, 
                 getattr(star_particles, attribute))
 
-
     disk_counter = 0
     for i in range(N_stars):
 
@@ -749,19 +812,16 @@ def restart_population (filepath, input_counter, alpha, mu, n_cells, r_min, r_ma
 
         else:
 
-            #viscous = ppd_code.setup_viscous_code(i)
-
             disk = disk_class.Disk(100.|units.AU, 0.1|units.MSun,
                 star_particles.initial_mass[i], ppd_code.codes[0].grid,
-                alpha, mu=mu, fried_folder=fried_folder)
+                alpha, mu=mu)
 
             host_star = star_particles[i]
 
-            #disk.model_time = grids.get_timestamp()
             disk.central_mass = host_star.mass
             disk.disk_dispersed = host_star.disk_dispersed
             disk.disk_convergence_failure = host_star.disk_convergence_failure
-            disk.disk_dust_mass = host_star.disk_dust_mass
+            disk._disk_dust_mass = host_star.disk_dust_mass
             disk.accreted_mass = host_star.accreted_mass
             disk.t_viscous = host_star.t_viscous
             if hasattr(host_star, 'age'):
@@ -774,33 +834,9 @@ def restart_population (filepath, input_counter, alpha, mu, n_cells, r_min, r_ma
             disk.grid.column_density = grids[disk_counter].column_density
             disk.grid.pressure = grids[disk_counter].pressure
 
-            '''
-            disk.channel_from_code = viscous.grid.new_channel_to(disk.grid)
-            disk.channel_to_code =   disk.grid.new_channel_to(viscous.grid)
-
-            # Outer density in g/cm^2
-            viscous.set_parameter(2, 1E-12)
-            # Disk midplane temperature at 1 AU in K
-            viscous.set_parameter(3, disk.Tm.value_in(units.K))
-            # Mean particle mass in g
-            viscous.set_parameter(4, (mu*1.008*constants.u).value_in(units.g))
-            # Disk accretion rate
-            if vader_mode == 'pedisk':
-                viscous.set_parameter(5,
-                    new_disk.accretion_rate.value_in(units.g/units.s))
-                viscous.parameters.inner_pressure_boundary_type = 1
-                viscous.parameters.inner_boundary_function = True
-                viscous.parameters.inner_pressure_boundary_torque = \
-                    0. | units.g*units.cm**2./units.s**2.
-            elif vader_mode == 'pedisk_nataccr':
-                # Disk alpha viscosity
-                viscous.set_parameter(5, alpha)
-            # Stellar mass in MSun
-            viscous.set_parameter(6,
-                star_particles[i].mass.value_in(units.MSun))
-
-            disk.viscous = viscous
-            '''
+            if grids_user is not None:
+                disk.grid_user = ppd_code.codes[0].grid_user.copy()
+                disk.grid_user.value = grids_user[disk_counter].value
 
             ppd_code.disks.append(disk)
 

@@ -30,7 +30,6 @@ class Disk:
         self.disk_dispersed           = False
         # Viscous code can fail to converge, catch and do not evolve further
         self.disk_convergence_failure = False
-        #self.disk_active              = True
 
         self.internal_photoevap_flag = internal_photoevap_flag
         self.external_photoevap_flag = external_photoevap_flag
@@ -66,7 +65,7 @@ class Disk:
         self.rho_g = rho_g                      # density of individual dust grains
         self.a_min = a_min                      # minimum dust grain size
 
-        self.disk_dust_mass = self.delta * self.disk_gas_mass
+        self._disk_dust_mass = self.delta * self.disk_gas_mass
 
         self.fuv_ambient_flux = 0. | G0
         self.outer_photoevap_rate = 0. | units.MSun/units.yr
@@ -170,12 +169,6 @@ class Disk:
                 # If still fails, give up hope
                 print ("[DISK] Absolute convergence failure at {a} Myr".format(
                     a=self.model_time.value_in(units.Myr)), flush=True)
-                #plt.plot(self.viscous.grid.r.value_in(units.AU), self.viscous.grid.column_density.value_in(units.g/units.cm**2))
-                #plt.xscale('log')
-                #plt.yscale('log')
-                #plt.axvline(self.disk_radius.value_in(units.AU))
-                #print (self.central_mass.value_in(units.MSun), self.outer_photoevap_rate.value_in(units.MSun/units.yr), dt.value_in(units.kyr), flush=True)
-                #plt.show()
                 self.disk_convergence_failure = True
 
 
@@ -196,19 +189,14 @@ class Disk:
         if self.disk_convergence_failure == False:
             accreted_dust = self.delta * (
                 -self.viscous.inner_boundary_mass_out - initial_accreted_mass )
-            if self.disk_dust_mass < accreted_dust:
-                accreted_dust = self.disk_dust_mass
-                self.disk_dust_mass = 0. | units.MSun
+            if self._disk_dust_mass < accreted_dust:
+                accreted_dust = self._disk_dust_mass
+                self._disk_dust_mass = 0. | units.MSun
 
             self.accreted_mass += -self.viscous.inner_boundary_mass_out - \
                 initial_accreted_mass
             self.accreted_mass += accreted_dust
             initial_accreted_mass = -self.viscous.inner_boundary_mass_out
-
-        # Flag to decide whether or not to evolve the disk
-        #self.disk_active = (not self.disk_dispersed)*(not self.disk_convergence_failure)
-
-
 
 
 
@@ -238,11 +226,11 @@ class Disk:
         dM_dust = self.dust_photoevap_rate * dt
         if self.disk_dispersed: # If disk is dispersed, do only half a step
             dM_dust /= 2.
-        self.disk_dust_mass -= dM_dust
+        self._disk_dust_mass -= dM_dust
 
         # Can't have negative mass
-        if  self.disk_dust_mass < 0. | units.MSun:
-            self.disk_dust_mass = 0. | units.MSun
+        if  self._disk_dust_mass < 0. | units.MSun:
+            self._disk_dust_mass = 0. | units.MSun
 
         if not self.disk_active:
             return
@@ -274,14 +262,6 @@ class Disk:
             except:
                 print ("[DISK] Absolute convergence failure at {a} Myr".format(
                     a=self.model_time.value_in(units.Myr)), flush=True)
-                '''
-                plt.plot(self.viscous.grid.r.value_in(units.AU), self.viscous.grid.column_density.value_in(units.g/units.cm**2))
-                plt.xscale('log')
-                plt.yscale('log')
-                plt.axvline(self.disk_radius.value_in(units.AU))
-                print (self.central_mass.value_in(units.MSun), self.outer_photoevap_rate.value_in(units.MSun/units.yr), dt.value_in(units.kyr), flush=True)
-                plt.show()
-                '''
                 self.disk_convergence_failure = True
 
 
@@ -297,15 +277,13 @@ class Disk:
         if self.disk_convergence_failure == False:
             accreted_dust = self.delta * (
                 -self.viscous.inner_boundary_mass_out - initial_accreted_mass )
-            if self.disk_dust_mass < accreted_dust:
-                accreted_dust = self.disk_dust_mass
-                self.disk_dust_mass = 0. | units.MSun
+            if self._disk_dust_mass < accreted_dust:
+                accreted_dust = self._disk_dust_mass
+                self._disk_dust_mass = 0. | units.MSun
 
             self.accreted_mass += -self.viscous.inner_boundary_mass_out - \
                 initial_accreted_mass
             self.accreted_mass += accreted_dust
-
-        #self.disk_active = (not self.disk_dispersed)*(not self.disk_convergence_failure)
 
         # Relative error in disk mass after step, compared to prescribed change
         # rates. Causes of error can be choked accretion (potentially big) and
@@ -418,20 +396,11 @@ class Disk:
         returns the disk radius                 (scalar, units of length)
         '''
 
-        Mtot = (self.grid.area*self.grid.column_density).sum()
-        Mcum = 0. | units.MSun
+        Mcumul = (self.grid.area*self.grid.column_density).cumsum()
 
-        edge = -1
+        edge = np.argmax(Mcumul >= Mcumul[-1]*f)
 
-        for i in range(len(self.grid.r)):
-
-            Mcum += self.grid.area[i]*self.grid.column_density[i]
-            
-            if Mcum >= Mtot*f:
-                edge = i
-                break
-
-        return self.grid.r[edge]
+        return self.grid.r[ edge ]
 
     @property
     def disk_gas_mass(self):
@@ -439,6 +408,17 @@ class Disk:
         Gas mass of disk (defined as total mass on VADER grid)
         '''
         return (self.grid.area*self.grid.column_density).sum()
+
+    @property
+    def disk_dust_mass(self):
+        '''
+        Dust mass of disk; if dust evolution is done by VADER, get it from there,
+        otherwise use scalar reservoir.
+        '''
+        if hasattr(self, 'grid_user'):
+          return (self.grid.area*(self.grid_user[0].value|units.g/units.cm**2).sum()
+        else:
+          return self._disk_dust_mass
 
     @property
     def disk_mass(self):
@@ -469,7 +449,7 @@ class Disk:
 
 def setup_disks_and_codes(disk_radii, disk_masses, stellar_masses,
         number_of_vaders, number_of_cells, r_min, r_max, alpha, critical_radii=None,
-        mu=2.33, Tm=None, IPE=True, EPE=True):
+        mu=2.33, Tm=None, IPE=True, EPE=True, fried_folder=None):
     '''
     Setup up a number of disk objects and VADER integrators
     This is done in the same function as they need to exactly share grids
@@ -525,7 +505,7 @@ def setup_disks_and_codes(disk_radii, disk_masses, stellar_masses,
                     disk_radii[i], disk_masses[i], stellar_masses[i],
                     viscous_codes[0].grid, alpha, mu=mu, Tm=Tm[i], 
                     internal_photoevap_flag=IPE, external_photoevap_flag=EPE, 
-                    critical_radius=critical_radii[i]) \
+                    critical_radius=critical_radii[i], fried_folder=fried_folder) \
                         for i in range(number_of_disks) ]
 
     return viscous_codes, disks
