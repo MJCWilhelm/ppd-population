@@ -91,7 +91,7 @@ class PPDPopulationAsync:
             self.compute_rad_field = self.compute_rad_field_from_radtrans
             if sph_hydro is not None:
                 print ("[PPDA] Both grid and SPH is unphysical, please pick one.")
-                print ("[PPDA] Defaulting to grid.")
+                print ("[PPDA] Defaulting to grid.", flush=True)
         else:
             self.compute_rad_field = self.compute_rad_field_from_stars
 
@@ -185,7 +185,7 @@ class PPDPopulationAsync:
                     dF = self.radiative_stars[i].fuv_luminosity/(4.*np.pi*R*R)
 
                     if self.sph_hydro is not None:
-                        print ("[PPDA] Extinction in SPH hydro is currently not implemented")
+                        print ("[PPDA] Extinction in SPH hydro is currently not implemented", flush=True)
                         '''
                         tau = optical_depth_between_points(self.sph_hydro,
                             host_star.position, self.radiative_stars[i].position, 
@@ -282,7 +282,8 @@ class PPDPopulationAsync:
     def evolve_disks (self, disk_ids, dt):
 
         print ("[PPDA] Evolving {a}/{b} disks for {c} kyr".format(
-            a=len(disk_ids), b=len(self.disked_stars), c=dt.value_in(units.kyr)))
+            a=len(disk_ids), b=len(self.disked_stars), c=dt.value_in(units.kyr)),
+            flush=True)
 
         active_disk_ids = list(disk_ids)
 
@@ -374,7 +375,7 @@ class PPDPopulationAsync:
                 # Also take errors of dust evolution into account
                 if self._params['vader_mode'] == 'pedisk_dusty' and \
                         self.codes[i].get_parameter(11) != 0.:
-                    print ("[PPDA] Absolute convergence failure at of disk {b} at {a} Myr, in dust".format(
+                    print ("[PPDA] Absolute convergence failure of disk {b} at {a} Myr, in dust".format(
                         a=self.disks[evolve_disk_ids[i]].model_time.value_in(
                             units.Myr), b=evolve_disk_ids[i]), flush=True)
                     self.disks[evolve_disk_ids[i]].disk_convergence_failure = True
@@ -479,7 +480,7 @@ class PPDPopulationAsync:
         '''
 
         if self.collision_detector is None:
-            print ("[PPDA] No collision detector set!")
+            print ("[PPDA] No collision detector set!", flush=True)
             return
 
         for i in range(len(self.collision_detector.particles(0))):
@@ -685,7 +686,7 @@ class PPDPopulationAsync:
                     a=self.output_counter, b=label), 'hdf5',
                     timestamp=self.model_time, overwrite_file=overwrite)
         else:
-            print ("[PPDA] No particles to write!")
+            print ("[PPDA] No particles to write!", flush=True)
 
 
     def write_grids (self, filepath='./', label='', overwrite=True):
@@ -693,7 +694,7 @@ class PPDPopulationAsync:
         N_disks = len(self.disked_stars)
 
         if N_disks == 0:
-            print ("[PPDA] No disks to write!")
+            print ("[PPDA] No disks to write!", flush=True)
             return
 
         N_grid = len(self.disks[self.disked_stars[0].disk_key].grid.r)
