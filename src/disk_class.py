@@ -35,8 +35,8 @@ class Disk:
         self.external_photoevap_flag = external_photoevap_flag
 
         if Tm is None:
-            # Tm ~ L^1/4 ~ (M^3)^1/4
-            Tm = (100. | units.K) * (central_mass.value_in(units.MSun))**(1./4.)
+            # h0~0.033 for all masses
+            Tm = (270. | units.K) * central_mass.value_in(units.MSun)
         self.Tm = Tm # Midplane temperature at 1 AU
         self.mu = mu # Mean molecular mass, in hydrogen masses
         # Disk midplane temperature at 1 AU is Tm, T(r)~r^-1/2
@@ -416,7 +416,7 @@ class Disk:
         otherwise use scalar reservoir.
         '''
         if hasattr(self, 'grid_user'):
-          return (self.grid.area*(self.grid_user[0].value|units.g/units.cm**2).sum()
+          return (self.grid.area*(self.grid_user[0].value|units.g/units.cm**2)).sum()
         else:
           return self._disk_dust_mass
 

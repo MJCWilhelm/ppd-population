@@ -55,8 +55,9 @@ class PPDPopulationAsync:
                 (mu*1.008*constants.u).value_in(units.g))
 
             if vader_mode == 'pedisk_dusty':
+                self.codes[i].set_parameter(3, dust_params['Tsubl'].value_in(units.K))
                 self.codes[i].set_parameter(5, alpha)
-                self.codes[i].set_parameter(7, 
+                self.codes[i].set_parameter(7,
                     dust_params['uf'].value_in(units.cm/units.s))
                 self.codes[i].set_parameter(8,
                     dust_params['rho_s'].value_in(units.g/units.cm**3))
@@ -245,11 +246,12 @@ class PPDPopulationAsync:
                 for disk_id in disk_ids[ mask_subcycle ] ]
             still_active_disk_ids = disk_ids[ mask_subcycle ][ mask_still_active ]
 
-            subcycle_epe_rate = self.compute_epe_rate(still_active_disk_ids)
-            for i in range(len(still_active_disk_ids)):
-                self.disks[still_active_disk_ids[i]].outer_photoevap_rate = \
-                    subcycle_epe_rate[i]
-            self.evolve_model_adaptive(still_active_disk_ids, dt/2.)
+            if len(still_active_disk_ids):
+                subcycle_epe_rate = self.compute_epe_rate(still_active_disk_ids)
+                for i in range(len(still_active_disk_ids)):
+                    self.disks[still_active_disk_ids[i]].outer_photoevap_rate = \
+                        subcycle_epe_rate[i]
+                self.evolve_model_adaptive(still_active_disk_ids, dt/2.)
 
         # Evolve disks that are not subcycled, and are still active
         # We select for active disks in the top call, but we can be in a subcycle!
@@ -336,10 +338,7 @@ class PPDPopulationAsync:
                     disk.inner_photoevap_rate.value_in(units.g/units.s))
                 self.codes[i].set_parameter(1, disk.external_photoevap_flag * \
                     disk.outer_photoevap_rate.value_in(units.g/units.s))
-                if self._params['vader_mode'] == 'pedisk_dust':
-                    self.codes[i].set_parameter(3,
-                        self.dust_params['Tsubl'].value_in(units.K))
-                else:
+                if self._params['vader_mode'] != 'pedisk_dusty':
                     self.codes[i].set_parameter(3, disk.Tm.value_in(units.K))
                 if self._params['vader_mode'] == 'pedisk':
                     self.codes[i].set_parameter(5, disk.accretion_rate.value_in(
@@ -583,6 +582,14 @@ class PPDPopulationAsync:
                         self.dust_params['a0'].value_in(units.cm)
                     new_disk.grid_user[2].value = new_disk.Tm.value_in(units.K) * \
                         new_disk.grid.r.value_in(units.au)**-0.5
+                    # A sublimated innermost cell and unsublimated 2nd cell
+                    # gives weird edge effects (tries to maintain constant
+                    # dust-to-gas ratio, so pulls in dust, which is then
+                    # sublimated, etc). Fine if both are sublimated, so just
+                    # ignore sublimation if only in the innermost cell
+                    if new_disk.grid_user[2,0].value|units.K >= self.dust_params['Tsubl'] and \
+                       new_disk.grid_user[2,1].value|units.K <  self.dust_params['Tsubl']:
+                        new_disk.grid_user[2,0].value = new_disk.grid_user[2,1].value
 
                 new_disk.host_star_id = host_star_id
                 new_disk.truncation_mass_loss = 0. | units.MSun
@@ -591,7 +598,7 @@ class PPDPopulationAsync:
 
                 self.star_particles[host_star_id].disk_key = host_star_id
                 self.star_particles[host_star_id].star_ejected = False
-                
+
 
             else:
 
@@ -740,7 +747,7 @@ class PPDPopulationAsync:
 def restart_population (filepath, input_counter, alpha, mu, n_cells, r_min, r_max, 
         number_of_workers=4, fried_folder='./', sph_hydro=None, grid_hydro=None, 
         label='', extra_attributes=[], vader_mode='pedisk_nataccr', 
-        max_frac=1., dust_params=None):
+        max_frac=1., dust_params=None, dust_model='Haworth2018'):
 
     if path.isfile(filepath+'/viscous_grids_{b}i{a:05}.hdf5'.format(
             a=input_counter, b=label)):
@@ -770,7 +777,8 @@ def restart_population (filepath, input_counter, alpha, mu, n_cells, r_min, r_ma
     ppd_code = PPDPopulationAsync(alpha=alpha, mu=mu, number_of_cells=n_cells,
             number_of_workers=number_of_workers, r_min=r_min, r_max=r_max,
             fried_folder=fried_folder, sph_hydro=sph_hydro, grid_hydro=grid_hydro,
-            vader_mode=vader_mode, max_frac=max_frac, dust_params=dust_params)
+            vader_mode=vader_mode, max_frac=max_frac, dust_params=dust_params,
+            dust_model=dust_model)
 
 
     if star_particles is None:
